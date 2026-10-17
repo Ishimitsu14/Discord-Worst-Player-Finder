@@ -1,3 +1,13 @@
+## Подготовка релиза Steam/Gemini — 18 октября 2026
+
+Для `17f5a0b9308e67f0710449e39a836a5c98c7cd49` успешно завершён [CI 39061259857](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39061259857): Ubuntu/Node 22.14.0 и 22.23.3 — 487/487, Windows/22.14.0 — 481 pass/6 Linux-only skip/0 fail. Typecheck, сборка, Bash syntax, распакованный production install/check и upload успешны. Deploy пропущен: workflow_dispatch выполнен на `feat/steam-gemini-release`. [Draft PR №1](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/pull/1) не объединён с main.
+
+Скачанный CI-артефакт содержит 128 записей; REVISION совпадает с указанным SHA. SHA256 самого release.tar.gz: `e15762c9363fb3fec950e0a2bb972af3f891fc581a5a189517e3f27435a64c35`, совпадает с приложенным checksum. Оба семейства/версии prompt, словари, receiver и lock сверены с точными байтами Git commit; рабочих ключей/БД/настроек браузера/тестов в архиве нет. Локальная проверка 292 отслеживаемых и включаемых файлов не нашла известных форматов ключей или приватных путей; это проверка известных шаблонов, а не доказательство отсутствия любых секретов.
+
+При ревью подготовки добавлены исключение .playwright-mcp из Git и workflow_dispatch-сборка артефакта в отдельной ветке. Проверка условий workflow подтверждает: ветка может собирать release, PR не доставляет, deploy требует main и DEPLOY_ENABLED=true. В runbook добавлена проверка установленного root-owned receiver: его прежняя allowlist не принимает hero-metrics-v1.json, а файл из архива не обновляет SSH entrypoint.
+
+VPS, установленный receiver/config, секреты, рабочая БД, платные вызовы и реальные сообщения этим этапом не проверялись и не изменялись. Перед merge/delivery требуется сверить/обновить receiver, затем сделать cold backup старым current до первого открытия БД новым кодом. Первая настройка остаётся manual/prepare-only; live-бюджет, отдельный ручной smoke и automatic согласуются отдельно. Результаты выше относятся к точной ревизии 17f5a0b; ниже сохранены исторические протоколы.
+
 ## Gemini runtime — 17 октября 2026
 
 Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.
