@@ -34,8 +34,8 @@
 
 - [x] 5.1 Подключить deploy main после всех CI jobs, manual main, отдельную concurrency без прерывания, contents:read, SSH known_hosts pin и scoped deploy key; проверить условия PR/main, YAML/shell и отсутствие секретов в артефакте/логах.
 - [x] 5.2 Задать GitHub deploy secrets/vars из локальных файлов и параметров VPS без вывода значений; gh secret/variable list должен подтвердить только имена, SSH deploy user — ограниченные права.
-- [ ] 5.3 Выполнить commit/push и успешную доставку проверенной revision через GitHub Actions; подтвердить run URL, artifact digest, release/current и unit на VPS без unit/integration тестов, платной генерации или тестового сообщения на production.
-- [ ] 5.4 Загрузить локальные Discord/config/env, явно init/register/start при наличии доступа; подтвердить fresh ready/revision и prepare-only/manual, без выдуманного успеха при missing config/секретах и без разрешения нового бюджета.
+- [x] 5.3 Выполнить commit/push и успешную доставку проверенной revision через GitHub Actions; подтвердить run URL, artifact digest, release/current и unit на VPS без unit/integration тестов, платной генерации или тестового сообщения на production.
+- [x] 5.4 Загрузить локальные Discord/config/env, явно init/register/start при наличии доступа; подтвердить fresh ready/revision и prepare-only/manual, без выдуманного успеха при missing config/секретах и без разрешения нового бюджета.
 
 ## 6. Итоговая интеграция
 
