@@ -16,15 +16,19 @@ Windows x64, Node v22.14.0, SQLite 3.47.2, discord.js 14.27.0/REST 2.6.3. Node e
 | Проверка | Результат |
 |---|---|
 | npm.cmd run typecheck / build | успешно |
-| Новый operations runtime/config/CLI | 12 тестов: config, live opt-in, init/state/cutoff, backup, ready/status, startup error/timeout, safe fatal, grace/deadline и поздний ID |
+| Новый operations runtime/config/CLI | 17 тестов: config, live opt-in, init/state/cutoff, backup/fault, ready/status, startup error/timeout, safe fatal/SQLite busy, grace/deadline/поздний ID, CLI fake REST и Linux signals |
 | Runtime artifact | 2 теста: allowlist, exact digest/revision, отказ плохому SHA и перезаписи |
-| Полный npm.cmd test с обычными локальными правами | 310/310 до добавления трёх Linux-only deploy-сценариев |
+| Полный npm.cmd test с обычными локальными правами | 319 тестов: 313 pass, 6 Linux-only skip, 0 fail |
 | Bash syntax receive/control | проверка запускается локально с обычными правами и в Linux release job |
 | openspec.cmd validate add-operations --type change --strict --no-interactive | успешно |
 
 Windows sandbox запрещает msys namespace и rename временного JSON: первичный focused дал write-error, с обычными правами init/state/runtime проходят. Ограничение не обходится неатомарной записью. Временные БД/архивы очищаются; в тестах нет реальных bot/OpenRouter/OpenDota ключей и платных API.
 
-Дополнены Linux-only тесты delivery: реальный flock с конфликтом второго процесса и освобождением после завершения, tar/checksum/staging, fake NPM/control/systemctl boundary, успешная смена кода, возврат прежнего current при health failure и отказ некорректному архиву до управляющих действий. Они выполняются в Linux CI, а Windows явно пропускает эти четыре сценария. Их результат ещё нужно подтвердить новым GitHub run.
+Дополнены Linux-only тесты delivery: реальный flock с конфликтом второго процесса и освобождением после завершения, tar/checksum/staging, fake NPM/control/systemctl boundary, успешная смена кода, возврат прежнего current при health failure и отказ некорректному архиву до управляющих действий. Они выполняются в Linux CI, а Windows явно пропускает эти четыре сценария.
+
+Для commit `fdc9fdba6600a1015f557417c197a227f8ea3fb9` в [CI](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39022637093) уже успешны оба Linux jobs (Node 22.14.0/22.23.3), включая эти четыре сценария; Windows и release ещё выполняются. Новые проверки CLI fake REST, SIGINT/SIGTERM и backup copy-failure будут проверены следующим run.
+
+Локальный focused operations/delivery: 23 теста, 17 pass/6 skip. Дополнительные проверки используют реальную эксклюзивную блокировку SQLite для фатального Storage error, отказ второго copyFile для прерывания backup и дочерний CLI с подменой SDK/REST. Исходная БД/предыдущий backup сохраняются, manifest прерванной копии отсутствует, явная регистрация выполняет ровно три guild-запроса и безопасно сообщает partial. Signal child-process проверки выполняются только Linux; Windows process.kill не моделирует POSIX-сигналы. Test preload не входит в release.
 
 ## Подготовленный VPS
 
@@ -34,7 +38,7 @@ Windows sandbox запрещает msys namespace и rename временного
 
 SSH выделенным ключом успешно аутентифицируется, произвольная команда отвергнута forced receiver с кодом 64. Scoped sudo проверен через sudo -l и visudo. systemd-analyze verify успешен, unit disabled/inactive, TimeoutStopSec=75s, RestartPreventExitStatus=75/78. Бот, тесты и платная генерация на VPS не запускались.
 
-Новый приватный deploy-ключ остаётся только локально. Автоматическая проверка разрешений отклонила его отправку в GitHub Secrets до явного разрешения пользователя; отклонённая команда не выполнялась. Root SSH-ключ не передавался. Application ID и channel ID получены, guild ID и локальный env-файл ещё требуются.
+Новый приватный deploy-ключ остаётся только локально. Автоматическая проверка разрешений отклонила его отправку в GitHub Secrets до явного разрешения пользователя; отклонённая команда не выполнялась. Root SSH-ключ не передавался. Discord application/guild/channel ID получены; локальная production конфигурация прошла offline check. Пустой env-файл создан вне Git, пользователь заполняет DISCORD_BOT_TOKEN; значение не выводится.
 
 ## Границы проверки
 
@@ -48,4 +52,4 @@ Cold backup требует внешней остановки и общей Linux
 - Реальные service restart/backup/rollback; базовая установка, права и systemd-analyze verify подтверждены выше.
 - Scoped deploy key/known_hosts и GitHub secrets/vars; DEPLOY_ENABLED не включён. Подготовленный deploy job ещё не означает действующую доставку.
 - Реальные Discord application/guild/channel/settings/token, явные init/register/start и fresh production health нужной revision. Ключи в чат не запрашиваются.
-- Signal CLI child-process и полный Storage-fatal fault matrix, отказ записи backup посреди копирования и полный requirement-to-test audit ещё требуют завершения перед отметкой всего модуля готовым.
+- Signal CLI child-process ожидает Linux CI; локальные Storage-fatal и backup copy-failure успешны. Requirement-to-test audit ещё требует завершения перед отметкой всего модуля готовым.

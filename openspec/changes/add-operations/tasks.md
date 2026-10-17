@@ -19,16 +19,16 @@
 - [ ] 3.2 Реализовать идемпотентную остановку/фатальную ошибку и учёт pending publisher Promise с grace; тестами проверить поздний ID до close, hanging transport/deadline, Storage error, повтор сигнала и отсутствие нового POST.
 - [x] 3.3 Реализовать JSONL logger и fresh local status с revision/mode/readiness и расходами из публичного Storage; тестами проверить stale/failed status, raw secret exception и отсутствие API/генерации при чтении; описать диагностику.
 - [ ] 3.4 Подключить CLI check/init/start/status/register-commands/backup и npm scripts; дочерним процессом проверить help/bad args/exit codes/сигналы, явную регистрацию fake REST и отсутствие авто-регистрации на start.
-- [ ] 3.5 Реализовать cold backup DB/state с digest manifest last без перезаписи; тестом повреждения/ошибки копирования и открытия копии подтвердить целостность, написать runbook stop/lock/restore отдельно и обязательную сверку внешних эффектов после старого backup.
+- [x] 3.5 Реализовать cold backup DB/state с digest manifest last без перезаписи; тестом повреждения/ошибки копирования и открытия копии подтвердить целостность, написать runbook stop/lock/restore отдельно и обязательную сверку внешних эффектов после старого backup.
 
 ## 4. Linux release и systemd
 
 - [x] 4.1 Проверить по SSH ОС/architecture/runtime/сервисы/диск указанного VPS; записать безопасную инвентаризацию, выбрать изолированный Node 22 patch и проверить официальный SHA256 без замены системного Node.
 - [x] 4.2 Подготовить отдельные app/deploy users, каталоги release/data/config и scoped SSH/sudo; убедиться, что root key не загружен в GitHub, другой сервис/права не изменены; описать первоначальную настройку.
-- [ ] 4.3 Создать systemd unit и общий flock wrapper для start/backup; Linux-проверкой подтвердить конфликт второго процесса до действий, restart без stale lock и systemd-analyze verify, соразмерность grace/TimeoutStopSec и отказ рестартов configuration error.
+- [x] 4.3 Создать systemd unit и общий flock wrapper для start/backup; Linux-проверкой подтвердить конфликт второго процесса до действий, restart без stale lock и systemd-analyze verify, соразмерность grace/TimeoutStopSec и отказ рестартов configuration error.
 - [ ] 4.4 Создать allowlist-пакетирование Linux runtime artifact с REVISION/digest; проверить tar inventory без тестов/секретов/БД и успешный offline check распакованной сборки.
-- [ ] 4.5 Реализовать deploy helper: staging release, production lock deps, offline check, stop своего unit, backup, атомарный current, запуск и health нужной revision; локальной Linux sandbox/поддельным systemctl проверить happy path и отказ до переключения.
-- [ ] 4.6 Реализовать code rollback при провале health с той же БД; fault тестом подтвердить возврат прежнего release, ненулевой deploy и неизменность receipts/data; описать ручной rollback и ошибку отсутствующей runtime-конфигурации.
+- [x] 4.5 Реализовать deploy helper: staging release, production lock deps, offline check, stop своего unit, backup, атомарный current, запуск и health нужной revision; локальной Linux sandbox/поддельным systemctl проверить happy path и отказ до переключения.
+- [x] 4.6 Реализовать code rollback при провале health с той же БД; fault тестом подтвердить возврат прежнего release, ненулевой deploy и неизменность receipts/data; описать ручной rollback и ошибку отсутствующей runtime-конфигурации.
 
 ## 5. GitHub CD и реальная доставка
 

@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, unlink, mkdir, copyFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 import { Client, GatewayIntentBits, Events } from 'discord.js';
 import { loadService, validateConfig, initService, backupService, startService, readStatus, OperationsError, type ServiceInput } from '../src/operations/index.js';
 import { activateService, dataPaths, readState } from '../src/operations/state.js';
 import { openStorage } from '../src/storage/index.js';
 import { accepted, settings, data, live } from './discord-interface-helpers.js';
-import { deferred, flush } from './opendota-helpers.js';
+import { deferred, flush, TestClock } from './opendota-helpers.js';
 
 async function fixture(t: TestContext, changes: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'operations-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -84,6 +88,20 @@ test('cold backup reopens with identical activation and manifest; existing or fa
   await assert.rejects(backupService(fx.input.config, failed), errorIs('write-error')); await assert.rejects(access(join(failed, 'manifest.json')));
 });
 
+test('interrupted backup leaves source and earlier backup intact and never writes a complete manifest', async t => {
+  const fx = await fixture(t); await initService(fx.input.config);
+  const previous = join(fx.root, 'previous'), output = join(fx.root, 'interrupted'); await backupService(fx.input.config, previous);
+  const db = await readFile(dataPaths(fx.input.config).db), state = await readFile(dataPaths(fx.input.config).state), manifest = await readFile(join(previous, 'manifest.json'));
+  const copy = filesystem.copyFile; let copies = 0;
+  filesystem.copyFile = async (...args) => { if (++copies === 2) throw new Error('synthetic-copy-failure'); await copy(...args); };
+  syncBuiltinESMExports();
+  try { await assert.rejects(backupService(fx.input.config, output), errorIs('write-error')); }
+  finally { filesystem.copyFile = copy; syncBuiltinESMExports(); }
+  assert.equal(copies, 2); await assert.rejects(access(join(output, 'manifest.json')));
+  assert.deepEqual(await readFile(dataPaths(fx.input.config).db), db); assert.deepEqual(await readFile(dataPaths(fx.input.config).state), state);
+  assert.deepEqual(await readFile(join(previous, 'manifest.json')), manifest);
+});
+
 test('foreground service starts one listener after ready, exposes safe status and stops resources once', async t => {
   const fx = await fixture(t); await initService(fx.input.config); const fake = fakeClient(), events: unknown[] = [];
   const service = await startService(fx.input, { client: fake.client, fetcher: async () => { throw new Error('network forbidden'); }, onEvent: value => { events.push(value); throw new Error('synthetic observer'); } });
@@ -119,6 +137,18 @@ test('fatal client error stops listener/worker with safe diagnostics and retains
   assert.doesNotMatch(JSON.stringify(events), /synthetic|secret/); await readState(fx.input.config);
 });
 
+test('real SQLite contention is a fatal Storage error and stops the runtime without any network action', { timeout: 15000 }, async t => {
+  const fx = await fixture(t, { pipeline: { workerIdleMs: 1000 } }); await initService(fx.input.config);
+  const fake = fakeClient(), clock = new TestClock(), events: unknown[] = []; let calls = 0;
+  const service = await startService(fx.input, { client: fake.client, clock, onEvent: event => { events.push(event); }, fetcher: async () => { calls++; throw new Error('network forbidden'); } });
+  const blocker = new DatabaseSync(dataPaths(fx.input.config).db);
+  try { blocker.exec('BEGIN EXCLUSIVE'); await clock.tick(1000); }
+  finally { blocker.exec('ROLLBACK'); blocker.close(); }
+  await assert.rejects(service.done, errorIs('runtime-failed'));
+  assert.equal(calls, 0); assert.equal(fake.destroyed(), 1); assert.equal(fake.client.listenerCount(Events.InteractionCreate), 0);
+  assert.match(JSON.stringify(events), /storage-failure/); await readState(fx.input.config);
+});
+
 for (const timedOut of [false, true]) test(`shutdown ${timedOut ? 'deadline' : 'grace'} keeps DB open for late publication ID without another POST`, { timeout: 15000 }, async t => {
   const fx = await fixture(t, { pipeline: { ...live } }); await initService(fx.input.config);
   const old = await accepted(t); await old.pipeline.stop(); old.storage.close(); await copyFile(old.path, dataPaths(fx.input.config).db);
@@ -148,4 +178,33 @@ test('CLI documents help/check/init and safe exit codes without loading env impl
   for (const args of [['bad'], ['check', '--config', fx.path, '--unknown', 'secret'], ['start', '--config', fx.path]]) {
     const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env }); assert.equal(result.status, 78); assert.doesNotMatch(result.stderr, /synthetic|Error:|at main/);
   }
+});
+
+test('CLI registers only explicit guild commands through fake REST and reports partial failure safely', async t => {
+  const fx = await fixture(t), trace = join(fx.root, 'rest.jsonl');
+  const args = ['--import', './dist/test/operations-cli-fixture.js', 'dist/src/operations/cli.js', 'register-commands', '--config', fx.path];
+  const env = { ...process.env, DISCORD_BOT_TOKEN: 'synthetic-discord-secret', WPF_TEST_TRACE: trace };
+  const complete = spawnSync(process.execPath, args, { encoding: 'utf8', env }); assert.equal(complete.status, 0, complete.stderr);
+  assert.equal(JSON.parse(complete.stdout).registered.length, 3);
+  const requests = (await readFile(trace, 'utf8')).trim().split('\n').map(row => JSON.parse(row));
+  assert.deepEqual(requests.map(row => row.name), ['worst', 'worst-status', 'worst-reanalyze']);
+  assert.ok(requests.every(row => row.route === `/applications/${fx.input.config.applicationId}/guilds/${settings.guildId}/commands`));
+  const partial = spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...env, WPF_TEST_REST_FAIL: '2' } });
+  assert.equal(partial.status, 1); assert.equal(JSON.parse(partial.stdout).registered.length, 1); assert.equal(JSON.parse(partial.stdout).status, 'partial');
+  assert.doesNotMatch(partial.stdout + partial.stderr, /synthetic|secret/); await assert.rejects(access(fx.input.config.dataDir));
+});
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) test(`Linux CLI ${signal} twice stops cleanly without registering commands`, { skip: process.platform !== 'linux', timeout: 15000 }, async t => {
+  const fx = await fixture(t), trace = join(fx.root, 'unexpected-rest.jsonl'); await initService(fx.input.config);
+  const child = spawn(process.execPath, ['--import', './dist/test/operations-cli-fixture.js', 'dist/src/operations/cli.js', 'start', '--config', fx.path], {
+    env: { ...process.env, DISCORD_BOT_TOKEN: 'synthetic-discord-secret', WPF_TEST_TRACE: trace },
+  });
+  t.after(() => { child.kill('SIGKILL'); });
+  let output = '', errors = ''; const ready = deferred<void>(), exited = once(child, 'exit');
+  child.stdout.on('data', chunk => { output += chunk; if (output.includes('"code":"ready"')) ready.resolve(); }); child.stderr.on('data', chunk => { errors += chunk; });
+  await Promise.race([ready.promise, exited.then(() => { throw new Error('CLI exited before ready'); })]);
+  child.kill(signal); child.kill(signal); const [code, reason] = await exited;
+  assert.equal(code, 0, errors); assert.equal(reason, null); assert.doesNotMatch(output + errors, /synthetic|secret/);
+  assert.equal(JSON.parse(await readFile(dataPaths(fx.input.config).health, 'utf8')).phase, 'stopped');
+  await assert.rejects(access(trace)); const storage = openStorage({ path: dataPaths(fx.input.config).db }); storage.close();
 });
