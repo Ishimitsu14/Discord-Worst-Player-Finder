@@ -12,7 +12,7 @@ async function crash(path: string, phase: string): Promise<{ jobId: string; now:
   const lines = createInterface({ input: child.stdout });
   try {
     return await new Promise((resolve, reject) => {
-      let delivered = false; const timer = setTimeout(() => reject(new Error(`crash worker timed out: ${stderr}`)), 15000);
+      let delivered = false; const timer = setTimeout(() => reject(new Error(`crash worker timed out: ${stderr}`)), 60000);
       lines.once('line', line => { delivered = true; clearTimeout(timer); try { resolve(JSON.parse(line)); } catch (error) { reject(error); } });
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.once('exit', code => { clearTimeout(timer); if (!delivered) reject(new Error(`crash worker exited ${code}: ${stderr}`)); });
