@@ -5,7 +5,7 @@ import { DiscordInterfaceError, type CommandDefinition, type CommandName, type R
 import { ensure, keys, object, snowflake } from './values.js';
 
 export function buildCommandDefinitions(): CommandDefinition[] {
-  const worst = new SlashCommandBuilder().setName('worst').setDescription('Поставить матч на разбор или показать сохранённую задачу')
+  const worst = new SlashCommandBuilder().setName('worst').setDescription('Разобрать матч или опубликовать готовый разбор')
     .addStringOption(option => option.setName('match_id').setDescription('ID матча OpenDota без ссылки').setRequired(true).setMinLength(1).setMaxLength(16));
   const repeat = new SlashCommandBuilder().setName('worst-reanalyze').setDescription('Создать новую версию анализа матча: только администратору')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)

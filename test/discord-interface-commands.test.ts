@@ -25,7 +25,7 @@ test('saved valid report has priority over a pending discovery candidate without
   const pipeline = fx.pipe({ historySource: 'steam', automaticSince: fx.clock.now() - 600000 }, { steam: { getMatchHistory: async () => ({ matches: [{ matchId: 101, startTime: 1799998000 }], nextStartAtMatchId: null }) } });
   const report = await drive(pipeline.discoverOnce(), fx.clock); assert.equal(report.pending, 1);
   const before = fx.calls.length, { ui, handle } = commands(fx, pipeline), command = interaction(); await handle(command);
-  assert.match(command.content(), /Сохранённый результат/); assert.doesNotMatch(command.content(), /Ожидаем данные/); assert.equal(fx.calls.length, before);
+  assert.match(command.content(), /Последний готовый разбор/); assert.doesNotMatch(command.content(), /Ожидаем данные/); assert.equal(fx.calls.length, before);
   assert.equal(fx.posts('analysis').length, 1); assert.equal(command.responses[0].body.flags, MessageFlags.Ephemeral); await ui.stop();
 });
 
@@ -40,7 +40,7 @@ test('interface config is inert, rejects unknown fields/getters and copies group
   }
   const mutable = structuredClone(settings), ui = createDiscordInterface({ settings: mutable }, deps); assert.equal(fx.calls.length, 0); assert.equal(fx.clock.timers.size, 0);
   mutable.channelId = '123'; mutable.steamAccountIds.push(7);
-  const command = interaction(); await drive(ui.handleInteraction(command.command as Interaction), fx.clock); assert.match(command.content(), /Задача принята/);
+  const command = interaction(); await drive(ui.handleInteraction(command.command as Interaction), fx.clock); assert.match(command.content(), /в очереди на разбор/);
   await ui.stop();
   for (const file of ['index', 'types', 'values', 'render', 'rest', 'commands', 'interface']) {
     const source = await readFile(`src/discord-interface/${file}.ts`, 'utf8'); assert.doesNotMatch(source, /process\.env|node:fs|console\./);
@@ -52,7 +52,7 @@ test('guild/channel/thread and Administrator are checked before queue, while nor
   for (const options of [{ guildId: null }, { guildId: '123' }, { channelId: '123' }, { thread: true }, { name: 'worst-reanalyze', side: 'radiant' }, { name: 'worst-reanalyze', side: 'radiant', permissions: PermissionFlagsBits.ManageGuild }]) {
     const command = interaction(options); await handle(command); assert.equal(command.responses.length, 1); assert.equal(command.responses[0].body.flags, MessageFlags.Ephemeral); assert.match(command.content(), /только/);
   }
-  assert.equal(fx.calls.length, 0); const normal = interaction({ side: 'radiant' }); await handle(normal); assert.match(normal.content(), /Задача принята/); assert.equal(fx.posts('analysis').length, 0); assert.equal(fx.storage.getLatestJob(101, 'radiant')!.state, 'queued'); await ui.stop();
+  assert.equal(fx.calls.length, 0); const normal = interaction({ side: 'radiant' }); await handle(normal); assert.match(normal.content(), /в очереди на разбор/); assert.equal(fx.posts('analysis').length, 0); assert.equal(fx.storage.getLatestJob(101, 'radiant')!.state, 'queued'); await ui.stop();
 });
 
 test('invalid input is private and never reaches OpenDota; uint64 IDs are unchanged', async t => {
@@ -66,7 +66,7 @@ test('invalid input is private and never reaches OpenDota; uint64 IDs are unchan
     if (missing.command.commandName === 'worst') Object.defineProperty(missing.command, 'options', { value: { getString: () => null } });
     await handle(missing); assert.match(missing.content(), /Укажи ID/);
   }
-  assert.equal(fx.calls.length, 0); const good = interaction({ side: 'radiant', id: '18446744073709551615' }); await handle(good); assert.match(good.content(), /Задача принята/); assert.equal(fx.storage.getLatestJob(101, 'radiant')!.settings.guildId, settings.guildId); await ui.stop();
+  assert.equal(fx.calls.length, 0); const good = interaction({ side: 'radiant', id: '18446744073709551615' }); await handle(good); assert.match(good.content(), /в очереди на разбор/); assert.equal(fx.storage.getLatestJob(101, 'radiant')!.settings.guildId, settings.guildId); await ui.stop();
 });
 
 test('ACK precedes slow OpenDota, duplicates do not enqueue twice, failed ACK never starts business work', async t => {
@@ -76,7 +76,7 @@ test('ACK precedes slow OpenDota, duplicates do not enqueue twice, failed ACK ne
   assert.deepEqual(await ui.handleInteraction(command.command as Interaction), { status: 'handled' }); gate.resolve(Response.json(data())); await drive(handling, fx.clock);
   assert.deepEqual(command.responses.map(row => row.method), ['defer', 'edit']); assert.equal(fx.calls.length, 1);
   const before = fx.calls.length, failure = interaction(); failure.hooks.defer = async () => { throw new Error('private interaction token'); }; await handle(failure); assert.equal(fx.calls.length, before); assert.equal(failure.responses.length, 1);
-  const existing = interaction({ side: 'radiant' }); await handle(existing); assert.match(existing.content(), /Найдена сохранённая/); assert.equal(fx.calls.length, before);
+  const existing = interaction({ side: 'radiant' }); await handle(existing); assert.match(existing.content(), /в очереди на разбор/); assert.equal(fx.calls.length, before);
   await ui.stop();
 });
 
@@ -105,7 +105,7 @@ test('status reads current failure plus prior result without API calls and same 
   let claim = fx.storage.claimNext()!.claim; fx.storage.finish(claim, { state: 'failed', reason: 'finish' });
   const current = fx.storage.createRevision({ requestId: 'second', matchId: 101, side: 'radiant', settings }); claim = fx.storage.claimNext()!.claim; fx.storage.finish(claim, { state: 'failed', reason: 'raw private token' });
   const { handle, ui } = commands(fx, fx.pipeline); const before = fx.calls.length, command = interaction({ name: 'worst-status', jobId: current.id }); await handle(command);
-  assert.match(command.content(), /версия 2: ошибка/); assert.match(command.content(), /Сохранённый результат: версия 1/); assert.doesNotMatch(command.content(), /raw private token/); assert.equal(fx.calls.length, before); assert.equal((command.responses.at(-1)!.body.embeds as unknown[]).length, 1);
+  assert.match(command.content(), /Не получилось закончить разбор/); assert.match(command.content(), /Последний готовый разбор · версия 1/); assert.doesNotMatch(command.content(), /raw private token/); assert.equal(fx.calls.length, before); assert.equal((command.responses.at(-1)!.body.embeds as unknown[]).length, 1);
   const hidden = fx.storage.enqueueInitial({ matchId: 102, side: 'radiant', origin: 'manual', settings: { ...settings, channelId: '123' } });
   const hiddenStatus = interaction({ name: 'worst-status', jobId: hidden.id }), unknown = interaction({ name: 'worst-status', jobId: 'missing-job' }); await handle(hiddenStatus); await handle(unknown);
   assert.equal(hiddenStatus.content(), unknown.content()); assert.doesNotMatch(hiddenStatus.content(), new RegExp(hidden.id)); await ui.stop();
@@ -117,14 +117,35 @@ test('existing job from old target and previous result of another channel stay p
   const existing = interaction({ channelId: '123', side: 'radiant' }); await module.handle(existing); assert.match(existing.content(), /не найдена или недоступна/); assert.doesNotMatch(observed, new RegExp(fx.job.id));
   fx.clock.time = fx.storage.getJob(fx.job.id).nextRunAt; const claim = fx.storage.claimNext()!.claim; fx.storage.finish(claim, { state: 'failed', reason: 'finish' });
   const current = fx.storage.createRevision({ requestId: 'new-target', matchId: 101, side: 'radiant', settings: target });
-  const status = interaction({ name: 'worst-status', channelId: '123', jobId: current.id }); await module.handle(status); assert.doesNotMatch(status.content(), /Сохранённый результат/); assert.equal((status.responses.at(-1)!.body.embeds as unknown[]).length, 0); await module.ui.stop();
+  const status = interaction({ name: 'worst-status', channelId: '123', jobId: current.id }); await module.handle(status); assert.doesNotMatch(status.content(), /Последний готовый разбор/); assert.equal((status.responses.at(-1)!.body.embeds as unknown[]).length, 0); await module.ui.stop();
 });
 
 test('unknown billing and publication needs-attention are visible without generation or repost', async t => {
   const fx = await fixture(t); fx.hooks.analysis = (url, init) => url.endsWith('/endpoints') ? undefined : response(init.body, null);
   const pipeline = fx.pipe(live), job = await fx.request(pipeline); await fx.process(pipeline);
   const module = commands(fx, pipeline), before = fx.calls.length, command = interaction({ name: 'worst-status', jobId: job.id }); await module.handle(command);
-  assert.match(command.content(), /Стоимость запроса неизвестна/); assert.match(command.content(), /Требуется внимание/); assert.equal(fx.calls.length, before); await module.ui.stop();
+  assert.match(command.content(), /Стоимость запроса неизвестна/); assert.match(command.content(), /Нужна проверка администратора/); assert.equal(fx.calls.length, before); await module.ui.stop();
+});
+
+test('processing replies explain each state, hide the job ID and offer safe polling by match', async t => {
+  const fx = await fixture(t), real = fx.pipe(), job = await fx.request(real), initial = real.getStatus({ jobId: job.id });
+  let current = initial;
+  const { handle, ui } = commands(fx, real, {}, { pipeline: { requestMatch: real.requestMatch.bind(real), requestReanalysis: real.requestReanalysis.bind(real), getStatus: () => current } });
+  const before = fx.calls.length;
+  for (const [state, step, expected] of [
+    ['queued', 'load-match', /в очереди на разбор/], ['running', 'analyze', /кто где насрал/],
+    ['waiting', 'wait-parse', /Жду.*реплей/], ['succeeded', 'publish', /готов/],
+    ['failed', 'analyze', /Не получилось закончить/], ['needs-attention', 'analyze', /приостановлен/],
+  ] as const) {
+    current = { ...initial, job: { ...job, state, step }, attention: state === 'needs-attention' };
+    const command = interaction({ name: 'worst-status', jobId: job.id }); await handle(command);
+    const content = command.content(), visible = content.replace(/\|\|.*?\|\|/gs, '');
+    assert.match(visible, expected); assert.ok(visible.includes(`/worst match_id:101 side:${job.side}`));
+    assert.ok(content.includes(`||${job.id}||`)); assert.ok(!visible.includes(job.id));
+    assert.doesNotMatch(visible, /Этап:|job_id:|вердикт|трибунал|подсудим/iu);
+    if (state === 'failed' || state === 'needs-attention') assert.doesNotMatch(visible, /скину сюда|Попробую ещё раз позже/);
+  }
+  assert.equal(fx.calls.length, before); assert.equal(fx.posts('analysis').length, 0); await ui.stop();
 });
 
 test('request timeout, stopped ACK and stopped business request never create new queue work', async t => {
@@ -142,7 +163,7 @@ test('one listener ignores other commands, isolates observer errors and preserve
   const module = commands(fx, undefined, {}, { onEvent: event => { events.push(event); if (events.length % 2) throw new Error('private observer'); return Promise.reject(new Error('private observer')); } });
   module.ui.attach(); module.ui.attach(); assert.equal(module.client.listenerCount(Events.InteractionCreate), 1);
   const foreign = interaction({ name: 'another-command' }); assert.equal((await module.ui.handleInteraction(foreign.command as Interaction)).status, 'ignored'); assert.equal(foreign.responses.length, 0);
-  const command = interaction({ side: 'radiant' }); module.client.emit(Events.InteractionCreate, command.command); await fx.clock.tick(3000); assert.match(command.content(), /Задача принята/);
+  const command = interaction({ side: 'radiant' }); module.client.emit(Events.InteractionCreate, command.command); await fx.clock.tick(3000); assert.match(command.content(), /в очереди на разбор/);
   const bad = interaction({ matchId: 'bad' }); await module.handle(bad); await flush(); assert.doesNotMatch(JSON.stringify(events), /private|personaname|token|steamAccountIds/); assert.ok(events.every(Object.isFrozen));
   await module.ui.stop(); await module.ui.stop(); assert.equal(module.client.listenerCount(Events.InteractionCreate), 0);
   assert.ok(fx.storage.getLatestJob(101, 'radiant')); assert.equal(fx.clock.timers.size, 0);

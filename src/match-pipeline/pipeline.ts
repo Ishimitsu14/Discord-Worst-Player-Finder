@@ -59,7 +59,7 @@ class Pipeline implements MatchPipeline {
   }
   private jobEvent(job: Job): void {
     const { knownCostUsd, reservedCostUsd, uncoveredUnknownCount } = this.db(() => this.deps.storage.getBillingSummary({ jobId: job.id }));
-    const safe = job.reason && (reasons.test(job.reason) || /^(?:analysis-profile-unavailable|gemini-(?:recovery-unavailable|request-recorded|retry-consumed))$/.test(job.reason));
+    const safe = job.reason && (reasons.test(job.reason) || /^(?:analysis-profile-unavailable|publication-(?:ready|requested)|gemini-(?:recovery-unavailable|request-recorded|retry-consumed))$/.test(job.reason));
     this.emit({ type: 'job', jobId: job.id, matchId: job.matchId, side: job.side, revision: job.revision, state: job.state, step: job.step,
       knownCostUsd, reservedCostUsd, uncoveredUnknownCount, ...(job.reason ? { code: safe ? job.reason : 'stored-reason' } : {}) });
   }
@@ -70,7 +70,11 @@ class Pipeline implements MatchPipeline {
   }
   private enqueue(matchId: number, side: Side, origin: Job['origin']): MatchRequestResult {
     const previous = this.db(() => this.deps.storage.getLatestJob(matchId, side));
-    const job = this.db(() => this.deps.storage.enqueueInitial({ matchId, side, origin, settings: this.deps.settings, analysisProfile: this.config.analysisProfile }));
+    let job = this.db(() => this.deps.storage.enqueueInitial({ matchId, side, origin, settings: this.deps.settings, analysisProfile: this.config.analysisProfile }));
+    if (origin === 'manual' && job.origin === 'automatic' && this.config.publicationMode === 'on-command'
+      && job.settings.guildId === this.deps.settings.guildId && job.settings.channelId === this.deps.settings.channelId) {
+      job = this.db(() => this.deps.storage.requestPublication({ jobId: job.id, guildId: this.deps.settings.guildId, channelId: this.deps.settings.channelId }));
+    }
     this.jobEvent(job); return { status: previous ? 'existing' : 'queued', job, result: this.db(() => this.deps.storage.getLatestResult(matchId, side)) };
   }
   requestMatch(input: { matchId: number; side?: Side }, options: RequestOptions = {}): Promise<MatchRequestResult> {
@@ -458,6 +462,9 @@ class Pipeline implements MatchPipeline {
   private async publish(ctx: Execution, artifacts: JobArtifacts, analysis: RuntimeAttempt): Promise<Job> {
     const previous = this.attempts(ctx).find(item => item.kind === 'publication' && !item.released);
     if (previous) return this.finish(ctx, previous.unresolved ? 'needs-attention' : 'failed', 'publication-failed');
+    if (this.config.publicationMode === 'on-command' && ctx.job.origin === 'automatic' && ctx.job.reason !== 'publication-requested') {
+      this.owned(ctx); return this.db(() => this.deps.storage.defer(ctx.claim, { nextRunAt: Number.MAX_SAFE_INTEGER, reason: 'publication-ready' }));
+    }
     if (this.config.mode !== 'live' || !this.deps.publisher) return this.defer(ctx, 'publisher-unavailable');
     this.guard(ctx); let message: string;
     try {
@@ -500,7 +507,7 @@ class Pipeline implements MatchPipeline {
     catch (error) { if (error instanceof StorageError && error.code === 'not-found') throw new PipelineError('not-found'); throw this.failStorage(); }
     const billing = this.db(() => this.deps.storage.getBillingSummary({ jobId: job.id })), billingUnknown = billing.unknownCount > 0;
     return { job, result: this.db(() => this.deps.storage.getLatestResult(job.matchId, job.side)), attention: job.state === 'needs-attention' || billingUnknown, billingUnknown,
-      knownCostUsd: billing.knownCostUsd, reservedCostUsd: billing.reservedCostUsd, uncoveredUnknownCount: billing.uncoveredUnknownCount };
+      knownCostUsd: billing.knownCostUsd, reservedCostUsd: billing.reservedCostUsd, uncoveredUnknownCount: billing.uncoveredUnknownCount, publicationMode: this.config.publicationMode };
   }
   private async sleep(ms: number, signal: AbortSignal): Promise<void> {
     const until = Math.min(Number.MAX_SAFE_INTEGER, this.clock.now() + ms);

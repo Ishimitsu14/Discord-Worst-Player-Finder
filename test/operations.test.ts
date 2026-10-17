@@ -156,7 +156,7 @@ test('explicit init never overwrites existing DB/state and ordinary start never 
 });
 
 test('activation persists across reopen/disable/enable; corrupt state or failed atomic write never resets cutoff', async t => {
-  const fx = await fixture(t, { automatic: true }); await initService(fx.input.config);
+  const fx = await fixture(t, { automatic: true, pipeline: { publicationMode: 'on-command' } }); await initService(fx.input.config);
   const first = await activateService(fx.input.config, 1000); assert.equal(first.automaticSince, 1000);
   assert.equal((await activateService({ ...fx.input.config, automatic: false }, 2000)).automaticSince, 1000);
   assert.equal((await activateService(fx.input.config, 3000)).automaticSince, 1000);

@@ -26,7 +26,8 @@ export function validateConfig(value: unknown, base: string): ServiceConfig {
     const ranges = { pollIntervalMs: [60000], pageSize: [1, 100], maxPagesPerAccount: [1, 10], maxCandidatesPerScan: [1, 1000], workerIdleMs: [1000], pauseMs: [60000],
       parseTimeoutMs: [1], parsePollMs: [15000], analysisTimeoutMs: [1, 2147483647], publicationTimeoutMs: [1, 2147483647],
       discoveryRetryMs: [60000], discoveryTimeoutMs: [60000], maxDiscoveryChecksPerScan: [1, 1000] };
-    keys(pipeline, [], [...Object.keys(ranges), 'mode', 'analysisProfile', 'historySource', 'allowExperimental', 'maxTotalCostUsd', 'maxEstimatedCostPerAttemptUsd']);
+    keys(pipeline, [], [...Object.keys(ranges), 'mode', 'analysisProfile', 'historySource', 'publicationMode', 'allowExperimental', 'maxTotalCostUsd', 'maxEstimatedCostPerAttemptUsd']);
+    ensure(pipeline.publicationMode === undefined || ['automatic', 'on-command'].includes(pipeline.publicationMode as string));
     ensure(pipeline.analysisProfile === undefined || ['legacy', 'gemini'].includes(pipeline.analysisProfile as string));
     for (const [key, [min, max]] of Object.entries(ranges)) if (Object.hasOwn(pipeline, key)) ensure(integer(pipeline[key], min, max));
     ensure((pipeline.parsePollMs ?? 15000) as number <= ((pipeline.parseTimeoutMs ?? 900000) as number));

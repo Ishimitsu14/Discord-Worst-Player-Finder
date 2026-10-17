@@ -46,10 +46,11 @@ for (const side of ['radiant', 'dire'] as const) for (const won of [true, false]
     assert.equal(fx.posts('analysis')[0].body, frozen); const stored = fx.storage.getLatestResult(101, side, 'gemini')!;
     assert.equal(stored.attempt.analysis!.version, version); assert.equal(stored.attempt.responseReceived, true); assert.ok(stored.attempt.streamBytes > 0);
     const embed = renderAnalysis({ analysisProfile: 'gemini', job: stored.job, analysis: stored.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! });
-    assert.match(embed.title!, won ? /победа/ : /поражение/); assert.equal(embed.fields!.filter(row => row.name.startsWith('Основание')).length, 3);
-    if (side === 'dire') assert.match(embed.fields!.find(row => row.name.startsWith('Его чат'))!.name, /20:00/);
-    if (version === 2) { assert.equal(embed.fields!.slice(-3).length, 3); embed.fields!.slice(-3).forEach((row, index) => assert.match(row.name, new RegExp(`${index + 1}/3`))); assert.match(embed.fields!.at(-1)!.name, won ? /Слабые места/ : /Почему проебали/); }
-    else assert.equal(embed.fields!.some(row => /1\/3/.test(row.name)), false);
+    assert.match(embed.fields!.find(row => row.name === '☠️ Итог')!.value, won ? /Победа/ : /Поражение/);
+    assert.equal((embed.fields!.find(row => row.name === '🧻 Где насрал')!.value.match(/\*\*\d\.\*\*/g) ?? []).length, 3);
+    if (side === 'dire') assert.match(embed.fields!.find(row => row.name.startsWith('💬 Последние слова'))!.name, /20:00/);
+    if (version === 2) { assert.match(embed.fields!.at(-1)!.name, won ? /Слабые места/ : /Почему проебали/); assert.equal((embed.fields!.at(-1)!.value.match(/\*\*\d\.\*\*/g) ?? []).length, 3); }
+    else assert.equal(embed.fields!.some(row => /Слабые места|Почему проебали/.test(row.name)), false);
     const calls = fx.calls.length, ui = commands(fx, pipeline), first = interaction({ matchId: '101', side }), status = interaction({ name: 'worst-status', jobId: job.id });
     await ui.handle(first); await ui.handle(status); await ui.ui.stop();
     assert.equal(fx.calls.length, calls); assert.equal(fx.sends(), 1); assert.equal(first.responses.at(-1)!.body.embeds instanceof Array, true);

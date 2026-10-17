@@ -38,6 +38,8 @@ register-commands — отдельное внешнее действие с од
 
 ## Режимы и расходы
 
+`pipeline.publicationMode=on-command` отделяет автоматический анализ от публичной отправки. При automatic=true бот заранее готовит разборы новых матчей, но `/worst match_id:...` публикует готовый auto-результат только по команде; `/worst-status` остаётся чтением. Default старых конфигов — automatic publication; пример явно выбирает on-command при automatic=false/prepare-only. Постоянная automaticSince создаётся только при первом successful Gateway-ready включении automatic до discover, затем хранится в operations-state.json. Матчи, завершившиеся до границы или ровно на ней, автоматически не анализируются; рестарт/деплой не переносит границу. Никогда не сбрасывайте state/БД для запуска старой истории или обхода расходов.
+
 Пример использует automatic=false и prepare-only: ручные запросы допустимы, MiMo и публичная публикация не выполняются. Для automatic=true первое успешное подключение сохраняет automaticSince до discover. Граница не меняется после рестарта/выключения/включения и сохраняется в backup вместе с БД. Поиск после простоя ограничен глубиной pipeline; бессрочного catch-up нет.
 
 Live требует mode=live, оба положительных maxTotalCostUsd/maxEstimatedCostPerAttemptUsd, OPENROUTER_API_KEY и allowExperimental=true для текущего пакета. Эти лимиты выбирает оператор явно; бюджет лабораторного пилота не переносится. Новый dataDir/БД нельзя использовать для обхода расходов. Unknown и needs-attention не разрешаются автоматически. Правила и ограничения бюджета остаются в [pipeline](../match-pipeline/README.md).

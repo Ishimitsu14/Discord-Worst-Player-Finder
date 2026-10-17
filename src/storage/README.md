@@ -2,6 +2,8 @@
 
 Локальная SQLite-БД, Node.js >=22.14.0. `node:sqlite` на минимальной версии экспериментален; npm-зависимости не добавлены. Импорт не открывает БД и не читает окружение.
 
+`requestPublication({jobId, guildId, channelId})` — атомарный допуск готового авторазбора: проверяет сохранённую цель, valid-попытку и отсутствие publication receipt. Только waiting/publication-ready переходит в publication-requested с nextRunAt=now; остальные состояния возвращаются без изменения. Повтор не меняет версию, чужая цель даёт conflict. Claim/checkpoint сохраняют reason; intent переживает reopen. Схема остаётся 3, данные и расходы не сбрасываются.
+
 ```ts
 import { openStorage } from './index.js';
 const storage = openStorage({ path: '.local/app.sqlite' });

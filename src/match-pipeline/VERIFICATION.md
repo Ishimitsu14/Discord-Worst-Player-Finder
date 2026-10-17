@@ -1,3 +1,11 @@
+## Авторазбор и публикация по команде — 18 октября 2026
+
+Режим publicationMode=on-command реализован на прежней SQLite схеме 3: auto-valid сохраняется в waiting/publication-ready, worker возвращает idle, до `/worst` нет publication receipt/POST. Scoped intent атомарен, повтор не меняет версию, claim/checkpoint/reopen сохраняют разрешение. После команды один настоящий Discord REST SDK POST использует сохранённый анализ; неизвестная отправка остаётся needs-attention без повторного POST. `/worst-status` и команда до готовности не выдают разрешение заранее, чужая цель не меняет задачу. Default automatic и первоначальный ручной origin сохраняют прежнее поведение.
+
+Отдельно проверена старая/равная/новая граница end time в Steam-историях и reopen с той же automaticSince: до границы и на ней нет job/AI; только новый матч получает одну синтетическую генерацию и остаётся без публикации. Operations activation-тест проверяет постоянную границу также с on-command. Production state не сбрасывается.
+
+Windows / Node.js 22.14.0: typecheck/build успешны, manual-publication + Steam — 19/19; полный набор — 495 тестов, 489 pass/6 Linux-only skip/0 fail. Strict нового change успешен. Это реальные публичные модули/SQLite/Discord SDK с fake HTTP без платных вызовов; CI/Linux, delivery и первая production-активация текущего кода ещё не выполнены. Права бота в рабочем канале и один read-only Steam GET подтверждены отдельно; значения ключей не выводились.
+
 ## Интеграция Gemini runtime — локальная проверка 17 октября 2026
 
 Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.

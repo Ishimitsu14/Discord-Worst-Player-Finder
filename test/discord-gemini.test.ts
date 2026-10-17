@@ -21,9 +21,12 @@ test('Gemini renderer: maximum schema strings/Unicode/mentions/links keep player
   const context = { analysisProfile: 'gemini' as const, job: stored.job, analysis: stored.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! };
   const message = createDiscordPublisher({ botToken: 'synthetic-discord-key' }).prepare(context), parsed = JSON.parse(message), embed = parsed.embeds[0];
   validateMessage(message, stored.attempt.attemptId!); assert.equal(parsed.enforce_nonce, true); assert.deepEqual(parsed.allowed_mentions, { parse: [], users: [], roles: [], replied_user: false });
-  assert.equal(embed.fields.filter((row: { name: string }) => row.name.startsWith('Основание')).length, 4);
-  assert.match(embed.description, /Legion Commander/); assert.match(embed.footer.text, /сокращён/); assert.equal(embed.fields.slice(-3).every((row: { name: string }) => row.name.includes('Почему проебали')), true);
-  const sum = embed.title.length + embed.description.length + embed.footer.text.length + embed.fields.reduce((n: number, row: { name: string; value: string }) => n + row.name.length + row.value.length, 0);
+  assert.equal((embed.fields.find((row: { name: string }) => row.name === '🧻 Где насрал').value.match(/\*\*\d\.\*\*/g) ?? []).length, 4);
+  assert.match(embed.title, /Legion Commander/); assert.match(embed.title, /^(🤡|💩) /u); assert.match(embed.footer.text, /сокращён/);
+  assert.match(embed.fields.at(-1).name, /Почему проебали/); assert.equal((embed.fields.at(-1).value.match(/\*\*\d\.\*\*/g) ?? []).length, 3);
+  assert.equal(embed.thumbnail.url, 'https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/legion_commander.png');
+  assert.equal(createDiscordPublisher({ botToken: 'synthetic-discord-key' }).prepare(context), message);
+  const sum = embed.author.name.length + embed.title.length + embed.description.length + embed.footer.text.length + embed.fields.reduce((n: number, row: { name: string; value: string }) => n + row.name.length + row.value.length, 0);
   assert.ok(sum <= 6000); assert.ok(embed.fields.every((row: { value: string }) => row.value.length <= 1024)); assert.doesNotMatch(JSON.stringify(embed), /@everyone|https:\/\/evil|@here/);
   const changed = structuredClone(context); changed.analysis.attemptId = 'different-attempt'; changed.job.resultAttemptId = 'different-attempt';
   assert.notEqual(JSON.parse(createDiscordPublisher({ botToken: 'synthetic-discord-key' }).prepare(changed)).nonce, parsed.nonce);
@@ -34,7 +37,7 @@ test('Gemini stored report survives failed legacy revision; scope/admin checks a
   const legacy = fx.pipe(live); await legacy.requestReanalysis({ requestId: 'explicit-admin-revision', matchId: 101, side: 'radiant' });
   fx.hooks.analysis = () => { throw Error('synthetic metadata failure'); }; const latest = await fx.process(legacy); assert.equal(latest.analysisProfile, 'legacy');
   const before = fx.calls.length, ui = commands(fx, legacy), ordinary = interaction({ matchId: '101' }), status = interaction({ name: 'worst-status', jobId: latest.id });
-  await ui.handle(ordinary); await ui.handle(status); assert.match(ordinary.content(), /Сохранённый результат: версия 1/); assert.match(status.content(), /Сохранённый результат: версия 1/);
+  await ui.handle(ordinary); await ui.handle(status); assert.match(ordinary.content(), /Последний готовый разбор · версия 1/); assert.match(status.content(), /Последний готовый разбор · версия 1/);
   assert.equal(fx.calls.length, before); assert.equal(fx.posts('analysis').length, 1); assert.equal(fx.sends(), 1);
   const forbidden = interaction({ name: 'worst-reanalyze', matchId: '101', side: 'radiant' }); await ui.handle(forbidden); assert.match(forbidden.content(), /администратору/);
   const outsider = interaction({ name: 'worst-status', jobId: job.id, channelId: '123' }); await ui.handle(outsider); assert.match(outsider.content(), /заданном канале/); await ui.ui.stop();
@@ -51,7 +54,31 @@ test('Gemini unknown/reserve status never invents report or calls a reserve a ch
 test('documented Gemini embed matches the public renderer fixture', async t => {
   const fx = await geminiFixture(t), pipeline = fx.geminiPipe(), job = await fx.request(pipeline, 101, 'dire'); await fx.process(pipeline);
   const stored = fx.storage.getLatestResult(101, 'dire', 'gemini')!, artifacts = fx.storage.getJobArtifacts(job.id, 'gemini');
-  const embed = renderAnalysis({ analysisProfile: 'gemini', job: stored.job, analysis: stored.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! });
+  const context = structuredClone({ analysisProfile: 'gemini' as const, job: stored.job, analysis: stored.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! });
+  context.analysis.attemptId = 'readme-gemini-example'; context.job.resultAttemptId = context.analysis.attemptId;
+  const embed = renderAnalysis(context);
   const readme = await readFile('src/discord-interface/README.md', 'utf8'), examples = [...readme.matchAll(/```json\r?\n([\s\S]*?)\r?\n```/g)];
   assert.deepEqual(embed, JSON.parse(examples[2][1]));
+});
+
+test('formatted Gemini rejects unsafe images and markup while accepting a previous plain payload', async t => {
+  const fx = await geminiFixture(t), pipeline = fx.geminiPipe(), job = await fx.request(pipeline, 101, 'dire'); await fx.process(pipeline);
+  const result = fx.storage.getLatestResult(101, 'dire', 'gemini')!, artifacts = fx.storage.getJobArtifacts(job.id, 'gemini');
+  const context = { analysisProfile: 'gemini' as const, job: result.job, analysis: result.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! };
+  const body = JSON.parse(createDiscordPublisher({ botToken: 'synthetic-discord-key' }).prepare(context));
+  for (const change of [
+    (embed: any) => { embed.thumbnail.url = 'https://evil.example/legion_commander.png'; },
+    (embed: any) => { embed.thumbnail.url += '?redirect=https://evil.example'; },
+    (embed: any) => { embed.author.name = '@everyone'; },
+    (embed: any) => { embed.description = '**@everyone**\nhttps://evil.example'; },
+    (embed: any) => { embed.fields[3].value = '[подмена](//evil.example)'; },
+    (embed: any) => { embed.fields[3].value = 'x'.repeat(1025); },
+  ]) {
+    const changed = structuredClone(body); change(changed.embeds[0]);
+    assert.throws(() => validateMessage(JSON.stringify(changed), result.attempt.attemptId!));
+  }
+  const previous = structuredClone(body), embed = previous.embeds[0]; delete embed.author; delete embed.thumbnail;
+  embed.title = 'Разбор #101 — Dire: поражение'; embed.description = 'Прежний сохранённый разбор';
+  embed.fields = [{ name: 'Основание 1', value: 'Сохранённое основание.' }];
+  validateMessage(JSON.stringify(previous), result.attempt.attemptId!);
 });

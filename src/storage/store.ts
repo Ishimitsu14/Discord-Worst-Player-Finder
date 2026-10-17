@@ -4,7 +4,7 @@ import { prepareAnalysis, validateAnalysisBundle, prepareGeminiAnalysis, isGemin
   type GeminiRecovery, type RuntimeAttempt, type RuntimeBundle, type RuntimePrepared, type RuntimeStarted } from '../match-analysis/index.js';
 import { validateCompactBundle } from '../match-facts/index.js';
 import { openDatabase, transaction } from './database.js';
-import { canonical, digest, encode, ensure, hash, id, integer, keys, object, pair, settings, shortText, translated } from './values.js';
+import { canonical, digest, encode, ensure, hash, id, integer, keys, object, pair, settings, shortText, snowflake, translated } from './values.js';
 import { validateAttempt, validateParse, validatePublication, validateStarted } from './validation.js';
 import { eligibleRecovery, validateRecovery } from './recovery.js';
 import type { ArtifactRefs, BillingSummary, Claim, ClaimedJob, EnqueueInput, Inputs, Job, JobArtifacts, MatchRecord, Receipt,
@@ -162,6 +162,22 @@ export class Storage {
   getJob(jobId: string): Job { return this.run('getJob', () => this.findJob(jobId)); }
   getLatestJob(matchId: number, side: Side): Job | null {
     return this.run('getLatestJob', () => { pair(matchId, side); const row = this.get('SELECT * FROM jobs WHERE match_id=? AND side=? ORDER BY revision DESC LIMIT 1', matchId, side); return row ? this.job(row) : null; });
+  }
+  requestPublication(input: { jobId: string; guildId: string; channelId: string }): Job {
+    return this.run('requestPublication', () => {
+      keys(input, ['jobId', 'guildId', 'channelId']); ensure(id(input.jobId) && snowflake(input.guildId) && snowflake(input.channelId));
+      return this.tx(() => {
+        const job = this.findJob(input.jobId);
+        ensure(job.settings.guildId === input.guildId && job.settings.channelId === input.channelId, 'conflict');
+        if (job.state !== 'waiting' || job.reason !== 'publication-ready') return job;
+        ensure(job.step === 'publish' && job.resultAttemptId, 'conflict');
+        const result = this.receipt(job.resultAttemptId);
+        ensure(result.jobId === job.id && result.kind === 'analysis' && !result.released && !result.unresolved && result.state === 'finished'
+          && (result.outcome as { status?: string })?.status === 'valid', 'conflict');
+        ensure(!this.get("SELECT id FROM external_attempts WHERE job_id=? AND kind='publication'", job.id), 'conflict');
+        return this.update(job, { nextRunAt: this.now(), reason: 'publication-requested' });
+      });
+    });
   }
   claimNext(): ClaimedJob | null {
     return this.run('claimNext', () => this.tx(() => {

@@ -9,6 +9,7 @@
 | Поле | Значение по умолчанию / проверка |
 |---|---|
 | mode | `prepare-only`; либо `live` |
+| publicationMode | `automatic`; либо `on-command`: автоматические разборы сохраняются до явной команды публикации |
 | automaticSince | без значения; Unix ms, неотрицательный safe integer <= now, обязателен для обнаружения |
 | historySource | `opendota`; либо явно `steam` |
 | pollIntervalMs | 900000 для OpenDota, 60000 для Steam; safe integer >=60000 |
@@ -25,6 +26,8 @@
 Неизвестные поля отклоняются. `live` требует непустой `apiKey`; `fetcher` можно передать аналитику для теста. Часы имеют `now/setTimeout/clearTimeout`. Необязательные зависимости: Publisher и onEvent. `facts` v1 принимает только словарь, без roleOverrides.
 
 ## Ручная постановка и обнаружение
+
+При `publicationMode=on-command` автоматически найденный valid сохраняется в waiting/publication-ready, step=publish, без Publisher/Discord POST и без повторного выполнения worker. Обычный requestMatch для готового результата и совпадающей сохранённой цели атомарно разрешает публикацию; следующий worker использует прежний анализ и существующий журнал отправки. Разрешение переживает restart, repeated request не создаёт новую генерацию/публикацию. getStatus остаётся чтением. Команда до готовности не разрешает будущую публикацию: её нужно повторить после готовности. Явный первоначальный ручной запрос origin=manual сохраняет прежний анализ+публикацию, поскольку команда уже разрешает оба действия. Готовый неопубликованный auto-разбор остаётся unfinished для прежнего запрета новой ревизии.
 
 ```ts
 const pipeline = createMatchPipeline({}, dependencies);

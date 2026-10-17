@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { validateMatchAnalysis, presentGeminiAnalysis } from '../match-analysis/index.js';
 import { DiscordInterfaceError, type APIEmbed, type PublicationContext } from './types.js';
 import { allowedMentions, ensure, id, integer, keys, object } from './values.js';
+import { heroImages } from './hero-images.js';
 
 const domain = /(?:[a-z\d][a-z\d-]*\.)+[a-z]{2,63}(?=[:/\s?#]|$)/giu;
 const activeUrl = /[a-z][a-z\d+.-]*:\/\/|www\.(?!\u200b)|(?:[a-z\d][a-z\d-]*\.)+[a-z]{2,63}(?=[:/\s?#]|$)/iu;
@@ -26,16 +27,29 @@ function safeText(value: unknown, max: number): value is string {
   }
   return true;
 }
+function safeFormattedText(value: unknown, max: number): value is string {
+  if (typeof value !== 'string' || value.length > max) return false;
+  return safeText(value.replace(/^> /gm, '').replace(/(?<!\\)\*\*((?:\\.|[^\\*\n])+)\*\*/g, '$1').replaceAll('\n', ' '), max);
+}
 export function validateEmbed(value: unknown): asserts value is APIEmbed {
   const check = (ok: unknown) => ensure(ok, 'invalid-message', 'render');
-  keys(value, ['title', 'url', 'description', 'fields', 'footer'], ['color'], 'invalid-message', 'render');
-  check(safeText(value.title, 256) && safeText(value.description, 4096));
+  keys(value, ['title', 'url', 'description', 'fields', 'footer'], ['color', 'author', 'thumbnail'], 'invalid-message', 'render');
+  const formatted = value.author !== undefined, fieldText = formatted ? safeFormattedText : safeText;
+  check(safeText(value.title, 256) && fieldText(value.description, 4096));
   check(typeof value.url === 'string' && /^https:\/\/www\.opendota\.com\/matches\/[1-9][0-9]{0,15}$/.test(value.url) && integer(Number(value.url.split('/').at(-1)), 1));
   check(value.color === undefined || integer(value.color, 0, 0xffffff));
   check(Array.isArray(value.fields) && value.fields.length <= 25);
   let sum = (value.title as string).length + (value.description as string).length;
+  if (formatted) {
+    keys(value.author, ['name'], [], 'invalid-message', 'render'); check(value.author.name === 'РАЗБОР КАТКИ'); sum += (value.author.name as string).length;
+  }
+  if (value.thumbnail !== undefined) {
+    keys(value.thumbnail, ['url'], [], 'invalid-message', 'render');
+    check(formatted && typeof value.thumbnail.url === 'string' && /^https:\/\/cdn\.cloudflare\.steamstatic\.com\/apps\/dota2\/images\/dota_react\/heroes\/[a-z0-9_]+\.png$/.test(value.thumbnail.url));
+  }
   for (const field of value.fields as unknown[]) {
-    keys(field, ['name', 'value'], [], 'invalid-message', 'render'); check(safeText(field.name, 256) && safeText(field.value, 1024));
+    keys(field, ['name', 'value'], formatted ? ['inline'] : [], 'invalid-message', 'render'); check(safeText(field.name, 256) && fieldText(field.value, 1024));
+    check(field.inline === undefined || typeof field.inline === 'boolean');
     sum += (field.name as string).length + (field.value as string).length;
   }
   keys(value.footer, ['text'], [], 'invalid-message', 'render'); check(safeText(value.footer.text, 2048)); sum += (value.footer.text as string).length; check(sum <= 6000);
@@ -92,17 +106,25 @@ function renderGemini(input: Extract<PublicationContext, { analysisProfile: 'gem
   let shortened = false;
   const text = (value: string, limit: number): string => { const cleaned = cleanText(value), bounded = shorten(cleaned, limit); shortened ||= cleaned !== bounded; ensure(bounded.trim(), 'invalid-result', 'render'); return bounded; };
   const duration = `${Math.floor(snapshot.data.duration / 60)}:${String(snapshot.data.duration % 60).padStart(2, '0')}`;
-  const fields = result.facts.map((fact, index) => ({ name: `Основание ${index + 1}`, value: text(fact.claim, 400) }));
+  const fields: NonNullable<APIEmbed['fields']> = [
+    { name: '🎮 Катка', value: `#${job.matchId}`, inline: true },
+    { name: '☠️ Итог', value: `${result.won ? 'Победа' : 'Поражение'} · ${job.side === 'radiant' ? 'Radiant' : 'Dire'}`, inline: true },
+    { name: '⏱ Длительность', value: duration, inline: true },
+    { name: '🧻 Где насрал', value: result.facts.map((fact, index) => `**${index + 1}.** ${text(fact.claim, 240)}`).join('\n\n') },
+  ];
   if (result.quote) {
     const time = result.quote.time_sec, stamp = `${time < 0 ? '−' : ''}${Math.floor(Math.abs(time) / 60)}:${String(Math.abs(time) % 60).padStart(2, '0')}`;
-    fields.push({ name: `Его чат • ${stamp}${result.quote.truncated ? ' • цитата сокращена' : ''}`, value: text(result.quote.text, 500) });
+    fields.push({ name: `💬 Последние слова · ${stamp}${result.quote.truncated ? ' · цитата сокращена' : ''}`, value: `> ${text(result.quote.text, 500)}` });
   }
-  fields.push({ name: 'Вердикт', value: text(result.verdict, 800) });
-  if (result.limitations.length) fields.push({ name: 'Ограничения', value: text(result.limitations.join(' • '), 400) });
-  result.teamFacts?.forEach((fact, index) => fields.push({ name: `${result.won ? 'Слабые места команды' : 'Почему проебали'} • ${index + 1}/3`, value: text(fact.claim, 400) }));
-  const embed: APIEmbed = { title: `Разбор #${job.matchId} — ${job.side === 'radiant' ? 'Radiant' : 'Dire'}: ${result.won ? 'победа' : 'поражение'}`,
-    url: `https://www.opendota.com/matches/${job.matchId}`, color: 0x5865f2,
-    description: `${text(result.playerName, 80)} — ${text(result.heroName ?? `Слот ${result.playerSlot}`, 50)} • ${duration} • ${text(result.nomination, 200)}`,
+  if (result.limitations.length) fields.push({ name: 'Оговорки', value: text(result.limitations.join(' • '), 400) });
+  if (result.teamFacts) fields.push({ name: result.won ? 'Слабые места команды' : '🪦 Почему проебали', value: result.teamFacts.map((fact, index) => `**${index + 1}.** ${text(fact.claim, 300)}`).join('\n\n') });
+  const badge = ['🤡', '💩'][createHash('sha256').update(attempt.attemptId!).digest()[0] % 2];
+  const hero = snapshot.data.players.find(player => player.player_slot === result.playerSlot)?.hero_id;
+  const image = typeof hero === 'number' ? heroImages[hero] : undefined;
+  const embed: APIEmbed = { author: { name: 'РАЗБОР КАТКИ' }, title: `${badge} ${text(result.playerName, 80)} — ${text(result.heroName ?? `Слот ${result.playerSlot}`, 50)}`,
+    url: `https://www.opendota.com/matches/${job.matchId}`, color: result.won ? 0xf59e0b : 0xef4444,
+    description: `**${text(result.nomination, 200)}**\n\n${text(result.verdict, 800)}`,
+    ...(image ? { thumbnail: { url: `https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${image}.png` } } : {}),
     fields, footer: { text: `Версия ${job.revision} • уверенность ${{ low: 'низкая', medium: 'средняя', high: 'высокая' }[result.confidence]} • экспериментально${shortened ? ' • текст сокращён' : ''}` } };
   validateEmbed(embed); return embed;
 }

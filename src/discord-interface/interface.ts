@@ -8,8 +8,13 @@ import { copySettings, ensure, id, integer, keys, matchId, privateMentions, snow
 const nativeClock: Clock = { now: Date.now, setTimeout: (callback, ms) => setTimeout(callback, ms), clearTimeout: timer => clearTimeout(timer as ReturnType<typeof setTimeout>) };
 const commands = new Set(['worst', 'worst-status', 'worst-reanalyze']);
 const unavailable = 'Задача не найдена или недоступна.';
-const states: Record<Job['state'], string> = { queued: 'в очереди', running: 'обрабатывается', waiting: 'ожидание', 'needs-attention': 'нужна проверка', succeeded: 'завершена', failed: 'ошибка' };
-const steps: Record<Job['step'], string> = { 'load-match': 'получение матча', 'wait-parse': 'ожидание реплея', 'build-facts': 'подготовка фактов', analyze: 'анализ', publish: 'публикация' };
+const steps: Record<Job['step'], string> = {
+  'load-match': 'Забираю составы и статистику из OpenDota.',
+  'wait-parse': 'Жду, пока OpenDota разберёт реплей. Потом продолжу.',
+  'build-facts': 'Собираю стату всех пяти союзников.',
+  analyze: 'Смотрю, кто где насрал, и собираю разбор.',
+  publish: 'Разбор готов — отправляю пост в этот канал.',
+};
 const reasons: Record<string, string> = {
   'live-disabled': 'Реальный анализ выключен.', 'experimental-disabled': 'Экспериментальный пакет не разрешён.', 'budget-unknown': 'Неизвестен расход прежнего запроса.',
   'budget-exhausted': 'Общий лимит расходов исчерпан.', 'parse-disabled': 'Запрос разбора реплея выключен.', 'parse-pending': 'Реплей ещё разбирается.',
@@ -70,9 +75,29 @@ class Interface implements DiscordInterface {
       else await this.limited(interaction.reply({ ...body, flags: MessageFlags.Ephemeral } as Parameters<typeof interaction.reply>[0]), active);
     } catch { this.emit({ type: 'error', code: 'reply-failed', interactionId: interaction.id }); }
   }
-  private status(job: Job, attention = false, billingUnknown = false, reservedCostUsd = 0): string {
-    return `Задача ${job.id} • версия ${job.revision}: ${states[job.state]}.\nЭтап: ${steps[job.step]}.${job.reason ? `\n${reasons[job.reason] ?? 'Обработка остановлена или ожидает проверки.'}` : ''}`
-      + `${attention ? '\nТребуется внимание: автоматического повтора нет.' : ''}${billingUnknown ? '\nСтоимость запроса неизвестна.' : ''}${reservedCostUsd > 0 ? `\nРезерв бюджета: $${reservedCostUsd.toFixed(6)}; это не подтверждённое списание.` : ''}\nПроверить: /worst-status job_id:${job.id}`;
+  private status(job: Job, attention = false, billingUnknown = false, reservedCostUsd = 0, publicationMode = 'automatic'): string {
+    const match = `матча #${job.matchId}`;
+    const onCommand = publicationMode === 'on-command' && job.origin === 'automatic';
+    const states: Record<Job['state'], string> = {
+      queued: `⏳ **Матч #${job.matchId} в очереди на разбор.**\nПосмотрю, кто где насрал, и соберу разбор.${onCommand ? ' Сохраню его, а в канал скину только по твоей команде.' : ' Когда будет готово — скину сюда.'}`,
+      running: `🔎 **Разбираю матч #${job.matchId}.**\n${steps[job.step]}`,
+      waiting: `⏳ **Разбор ${match} пока ждёт.**\n${job.step === 'wait-parse' ? steps[job.step] : 'Сейчас не получается продолжить. Попробую ещё раз позже.'}`,
+      'needs-attention': `⚠️ **Разбор ${match} приостановлен.**`,
+      succeeded: `✅ **Разбор ${match} готов.**`,
+      failed: `❌ **Не получилось закончить разбор ${match}.**`,
+    };
+    const lines = [states[job.state]];
+    const ready = job.reason === 'publication-ready', requested = job.reason === 'publication-requested';
+    if (ready) lines[0] = `✅ **Разбор ${match} готов и ждёт команды на публикацию.**`;
+    else if (requested) lines[0] = `📨 **Разбор ${match} готов.**\nПубликация в очереди — скоро пост появится здесь.`;
+    else if (job.reason) lines.push(reasons[job.reason] ?? 'Нужно проверить, что случилось. Обратись к администратору бота.');
+    if (attention) lines.push('Нужна проверка администратора. Сам повторять анализ не буду.');
+    if (billingUnknown) lines.push('Стоимость запроса неизвестна.');
+    if (reservedCostUsd > 0) lines.push(`Резерв бюджета: $${reservedCostUsd.toFixed(6)}; это не подтверждённое списание.`);
+    if (onCommand && !ready && !requested && ['queued', 'running', 'waiting'].includes(job.state)) lines.push('Когда разбор будет готов, повтори команду, чтобы выложить его в канал.');
+    lines.push(`\n${ready ? 'Опубликовать в этом канале' : 'Проверить состояние можно той же командой'}: \`/worst match_id:${job.matchId} side:${job.side}\`.`,
+      `Служебный номер: ||${job.id}||${job.revision > 1 ? ` · повторный разбор №${job.revision}` : ''}`);
+    return lines.join('\n');
   }
   private result(result: StoredResult | null): { content: string; embeds?: ReturnType<typeof renderAnalysis>[] } {
     if (!result || !this.scope(result.job)) return { content: '' };
@@ -86,7 +111,8 @@ class Interface implements DiscordInterface {
     ensure(embed, 'storage-failure', 'command');
     const publication = result.publications.find(item => item.outcome && 'messageId' in item.outcome);
     const messageId = publication?.outcome && 'messageId' in publication.outcome ? publication.outcome.messageId : null;
-    return { content: `\nСохранённый результат: версия ${result.job.revision}.${messageId && snowflake(messageId) ? `\nhttps://discord.com/channels/${result.job.settings.guildId}/${result.job.settings.channelId}/${messageId}` : '\nДоставка публичного сообщения не подтверждена.'}`, embeds: [embed] };
+    const waiting = ['publication-ready', 'publication-requested'].includes(result.job.reason ?? '') && result.publications.length === 0;
+    return { content: `\n\nПоследний готовый разбор · версия ${result.job.revision}.${messageId && snowflake(messageId) ? `\n[Открыть пост с разбором](https://discord.com/channels/${result.job.settings.guildId}/${result.job.settings.channelId}/${messageId})` : waiting ? '\nРазбор сохранён. Пост ещё не опубликован.' : '\nРазбор сохранён, но отправка поста в канал не подтверждена.'}`, embeds: [embed] };
   }
   private safeError(error: unknown, active: Active): ErrorCode {
     if (error instanceof StorageError || error instanceof PipelineError && error.code === 'storage-failure' || error instanceof DiscordInterfaceError && error.code === 'storage-failure') { this.disable(active); return 'storage-failure'; }
@@ -118,7 +144,7 @@ class Interface implements DiscordInterface {
         const status = this.deps.pipeline.getStatus({ jobId });
         if (!this.scope(status.job)) { await this.reply(interaction, unavailable, active, true); return; }
         const result = this.result(status.result);
-        await this.reply(interaction, this.status(status.job, status.attention, status.billingUnknown, status.reservedCostUsd) + result.content, active, true, { embeds: result.embeds ?? [] });
+        await this.reply(interaction, this.status(status.job, status.attention, status.billingUnknown, status.reservedCostUsd, status.publicationMode) + result.content, active, true, { embeds: result.embeds ?? [] });
         this.emit({ type: 'command', code: 'completed', interactionId: interaction.id, guildId: interaction.guildId!, channelId: interaction.channelId, jobId: status.job.id }); return;
       }
       const requested: MatchRequestResult = interaction.commandName === 'worst-reanalyze'
@@ -136,7 +162,7 @@ class Interface implements DiscordInterface {
       if (!this.scope(requested.job)) { await this.reply(interaction, unavailable, active, true); return; }
       const result = this.result(requested.result);
       const status = this.deps.pipeline.getStatus({ jobId: requested.job.id });
-      await this.reply(interaction, `${requested.status === 'existing' ? 'Найдена сохранённая задача.' : 'Задача принята.'}\n${this.status(requested.job, status.attention, status.billingUnknown, status.reservedCostUsd)}${result.content}`, active, true, { embeds: result.embeds ?? [] });
+      await this.reply(interaction, `${this.status(status.job, status.attention, status.billingUnknown, status.reservedCostUsd, status.publicationMode)}${result.content}`, active, true, { embeds: result.embeds ?? [] });
       this.emit({ type: 'command', code: 'completed', interactionId: interaction.id, guildId: interaction.guildId!, channelId: interaction.channelId, jobId: requested.job.id });
     } catch (error) {
       const code = this.safeError(error, active);

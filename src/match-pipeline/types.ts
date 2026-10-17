@@ -8,6 +8,7 @@ import type { Job, PublicationInput, Storage, StoredResult } from '../storage/in
 
 export type { GroupSettings, Job, PublicationInput, Side, StoredResult, Clock };
 export interface PipelineOptions {
+  publicationMode?: 'automatic' | 'on-command';
   analysisProfile?: AnalysisProfile;
   historySource?: 'opendota' | 'steam'; discoveryRetryMs?: number; discoveryTimeoutMs?: number; maxDiscoveryChecksPerScan?: number;
   mode?: 'prepare-only' | 'live'; automaticSince?: number; pollIntervalMs?: number; pageSize?: number;
@@ -50,7 +51,7 @@ export interface DiscoveryReport {
   pending?: number; deferred?: number; checks?: number; accountsChecked?: number;
 }
 export type ProcessResult = { status: 'idle' | 'busy' } | { status: 'processed'; job: Job };
-export interface PipelineStatus { job: Job; result: StoredResult | null; attention: boolean; billingUnknown: boolean; knownCostUsd: number; reservedCostUsd: number; uncoveredUnknownCount: number }
+export interface PipelineStatus { job: Job; result: StoredResult | null; attention: boolean; billingUnknown: boolean; knownCostUsd: number; reservedCostUsd: number; uncoveredUnknownCount: number; publicationMode?: 'automatic' | 'on-command' }
 export interface MatchPipeline {
   readonly config: PipelineConfig;
   requestMatch(input: { matchId: number; side?: Side }, options?: RequestOptions): Promise<MatchRequestResult>;

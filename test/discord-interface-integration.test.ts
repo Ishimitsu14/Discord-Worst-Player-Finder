@@ -54,7 +54,7 @@ for (const scenario of ['manual', 'automatic', 'insufficient-evidence'] as const
     assert.match(message.embeds[0].title, scenario === 'insufficient-evidence' ? /Недостаточно данных/ : /Разбор/);
     const before = fx.calls.length, privateStatus = sdkCommand(client, 'worst-status', { job_id: job.id });
     await drive(assembled.discord.handleInteraction(privateStatus), fx.clock); assert.equal(fx.calls.length, before);
-    const edit = api.calls.filter(call => call.init.method === 'PATCH').at(-1)!; const body = JSON.parse(String(edit.init.body)); assert.match(body.content, /Сохранённый результат: версия 1/); assert.match(body.content, /https:\/\/discord.com\/channels/); assert.equal(body.embeds.length, 1);
+    const edit = api.calls.filter(call => call.init.method === 'PATCH').at(-1)!; const body = JSON.parse(String(edit.init.body)); assert.match(body.content, /Последний готовый разбор · версия 1/); assert.match(body.content, /https:\/\/discord.com\/channels/); assert.equal(body.embeds.length, 1);
     assert.deepEqual(body.allowed_mentions.parse, []); assert.equal(api.calls.filter(call => call.url.pathname.endsWith('/messages') && call.init.method === 'POST').length, 1);
     assert.equal(fx.storage.listAttempts(job.id).filter(row => row.kind === 'publication').length, 1);
     await assembled.discord.stop(); await assembled.pipeline.stop(); assert.equal(fx.clock.timers.size, 0);
@@ -70,7 +70,7 @@ test('confirmed Discord refusal keeps accepted analysis readable without retry a
   await pipeline.stop(); fx.reopen(); const next = fx.pipe(live, { publisher: publisher(api.makeRequest) });
   assert.equal((await next.processNext()).status, 'idle');
   const module = commands(fx, next), status = interaction({ name: 'worst-status', jobId: job.id }); await module.handle(status);
-  assert.match(status.content(), /права бота/); assert.match(status.content(), /Сохранённый результат/); assert.doesNotMatch(status.content(), /synthetic private error/);
+  assert.match(status.content(), /права бота/); assert.match(status.content(), /Последний готовый разбор/); assert.doesNotMatch(status.content(), /synthetic private error/);
   assert.equal(api.posts().length, 1); assert.equal(fx.posts('analysis').length, 1); await module.ui.stop();
 });
 
@@ -94,7 +94,7 @@ for (const phase of ['message-saved', 'message-sent', 'id-saved'] as const) {
     if (phase === 'id-saved') { assert.equal(result.status, 'processed'); assert.equal(fx.storage.getJob(job.id).state, 'succeeded'); }
     else { assert.equal(result.status, 'idle'); assert.equal(fx.storage.getJob(job.id).state, 'needs-attention'); }
     assert.equal(api.posts().length, oldPosts); assert.equal(fx.posts('analysis').length, oldAnalysisPosts); assert.equal(oldPosts, phase === 'message-saved' ? 0 : 1);
-    const module = commands(fx, next), command = interaction({ name: 'worst-status', jobId: job.id }); await module.handle(command); assert.match(command.content(), /Сохранённый результат/); await module.ui.stop();
+    const module = commands(fx, next), command = interaction({ name: 'worst-status', jobId: job.id }); await module.handle(command); assert.match(command.content(), /Последний готовый разбор/); await module.ui.stop();
   });
 }
 

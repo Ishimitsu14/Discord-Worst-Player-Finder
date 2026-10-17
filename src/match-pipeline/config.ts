@@ -16,7 +16,7 @@ export function freeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (value && typeof value === 'object' && !seen.has(value)) { seen.add(value); Object.values(value).forEach(child => freeze(child, seen)); Object.freeze(value); } return value;
 }
 export function configure(options: PipelineOptions, deps: PipelineDependencies): { config: PipelineConfig; dependencies: PipelineDependencies } {
-  const defaults = { analysisProfile: 'legacy' as const, historySource: 'opendota' as const, discoveryRetryMs: 60000, discoveryTimeoutMs: 1800000, maxDiscoveryChecksPerScan: 10,
+  const defaults = { publicationMode: 'automatic' as const, analysisProfile: 'legacy' as const, historySource: 'opendota' as const, discoveryRetryMs: 60000, discoveryTimeoutMs: 1800000, maxDiscoveryChecksPerScan: 10,
     mode: 'prepare-only' as const, pollIntervalMs: options?.historySource === 'steam' ? 60000 : 900000, pageSize: 20, maxPagesPerAccount: 1, maxCandidatesPerScan: 100,
     workerIdleMs: 1000, pauseMs: 300000, parseTimeoutMs: 900000, parsePollMs: 15000, analysisTimeoutMs: 180000,
     publicationTimeoutMs: 30000, allowExperimental: false };
@@ -24,6 +24,8 @@ export function configure(options: PipelineOptions, deps: PipelineDependencies):
   ensure(object(deps), 'invalid-config');
   const config = { ...defaults, ...options } as PipelineConfig;
   ensure(['legacy', 'gemini'].includes(config.analysisProfile), 'invalid-config');
+  ensure(['automatic', 'on-command'].includes(config.publicationMode), 'invalid-config');
+  if (config.publicationMode === 'on-command') ensure(typeof deps.storage?.requestPublication === 'function', 'invalid-config');
   if (deps.managementKey !== undefined) ensure(typeof deps.managementKey === 'string' && deps.managementKey.trim().length > 0 && deps.managementKey !== deps.apiKey, 'invalid-config');
   if (config.analysisProfile === 'gemini' || deps.geminiPrompt !== undefined || deps.heroMetricsDictionary !== undefined) {
     ensure(object(deps.geminiPrompt) && ['gemini-match-analysis-v1', 'gemini-match-analysis-v2'].includes(deps.geminiPrompt.profile?.responseFormat), 'invalid-config');

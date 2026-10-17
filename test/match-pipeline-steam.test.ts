@@ -199,3 +199,19 @@ test('Steam integration: ten accounts, separate pairs, private teammate, bounded
   assert.equal(fx.calls.length, before); assert.equal(fx.calls.some(call => call.url.includes('/players/')), false);
   assert.equal((await worker.processNext()).status, 'idle');
 });
+
+test('on-command auto analysis excludes all history at or before activation and keeps the boundary after reopen', async t => {
+  const fx = await steamFixture(t, { ...live, publicationMode: 'on-command' }), cutoff = fx.config.automaticSince;
+  for (const [index, id] of [101, 102, 103].entries()) {
+    const row = data(id); row.start_time = cutoff / 1000 - row.duration + index - 1; fx.matches.set(id, row);
+  }
+  for (const account of settings.steamAccountIds) fx.histories.set(account, [101, 102, 103]);
+  const scan = await fx.scan(); assert.equal(scan.queued.length, 1); assert.equal(fx.storage.getLatestJob(101, 'radiant'), null); assert.equal(fx.storage.getLatestJob(102, 'radiant'), null);
+  const ready = await fx.process(fx.pipeline); assert.equal(ready.matchId, 103); assert.equal(ready.origin, 'automatic'); assert.equal(ready.reason, 'publication-ready');
+  assert.equal(fx.posts('analysis').length, 1); assert.equal(fx.storage.listAttempts(ready.id).some(attempt => attempt.kind === 'publication'), false);
+  await fx.pipeline.stop(); fx.reopen(); await fx.clock.tick(60000);
+  const resumed = fx.pipe(fx.config, { steam: fx.steam }); await drive(resumed.discoverOnce(), fx.clock);
+  assert.equal(resumed.config.automaticSince, cutoff); assert.equal((await resumed.processNext()).status, 'idle');
+  assert.equal(fx.storage.getLatestJob(101, 'radiant'), null); assert.equal(fx.storage.getLatestJob(102, 'radiant'), null); assert.equal(fx.posts('analysis').length, 1);
+  const explicit = await resumed.requestMatch({ matchId: 101, side: 'radiant' }); assert.equal(explicit.status, 'queued');
+});
