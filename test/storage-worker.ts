@@ -10,6 +10,7 @@ function pause(value: unknown): never {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); process.exit(2);
 }
 if (phase === 'race-claim' || phase === 'race-revision') {
+  await new Promise<void>(resolve => { process.once('message', () => resolve()); process.send?.('ready'); });
   try {
     const value = phase === 'race-claim' ? store.claimNext()?.job.id ?? null
       : store.createRevision({ requestId: `request-${process.pid}`, matchId: 101, side: 'radiant', settings }).id;

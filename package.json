@@ -8,6 +8,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "start": "node dist/src/operations/cli.js start",
+    "service": "node dist/src/operations/cli.js",
     "test": "npm run build && node --test dist/test/*.test.js",
     "lab": "node dist/src/evaluation-lab/cli.js"
   },

@@ -2,29 +2,29 @@
 
 ## 1. Приватный репозиторий и CI
 
-- [ ] 1.1 Создать private GitHub repo, инициализировать main/origin, проверить ignore и индекс на секреты/БД/локальные данные; подтвердить isPrivate и начальный commit/push.
+- [x] 1.1 Создать private GitHub repo, инициализировать main/origin, проверить ignore и индекс на секреты/БД/локальные данные; подтвердить isPrivate и начальный commit/push.
 - [ ] 1.2 Добавить GitHub Actions npm ci/typecheck/full test на Windows и Linux с закреплёнными actions и Node >=22.14; проверить успешные jobs на GitHub без runtime ключей.
-- [ ] 1.3 Описать импорт, проверки и границы CI в корневом README; сверить команды с package scripts и workflow, записать SHA/run URL в отчёте.
+- [x] 1.3 Описать импорт, проверки и границы CI в корневом README; сверить команды с package scripts и workflow, записать SHA/run URL в отчёте.
 
 ## 2. Конфигурация и постоянные данные
 
-- [ ] 2.1 Создать публичный operations/index с безопасными ошибками, строгим config v1 и загрузкой публичных settings/prompt/dictionary; тестами проверить unknown/type/path/secret ошибки и отсутствие действий при импорте.
-- [ ] 2.2 Реализовать check и явную передачу env-секретов с prepare-only/manual defaults; проверить отсутствие сети/создания БД и отказы live без ключа/budgets/experimental; добавить пустые env и service config examples с инструкцией.
-- [ ] 2.3 Реализовать отдельный init без перезаписи и обязательность пары DB/state для start; тестами подтвердить повтор init, пропавшую БД, повреждённое/несовместимое состояние и сохранение исходных данных.
-- [ ] 2.4 Сохранять automaticSince атомарно до первого discover, переиспользовать после restart/disable/enable; тестом reopen и отказа записи подтвердить отсутствие сканирования с новой/несохранённой границей, описать перенос данных.
+- [x] 2.1 Создать публичный operations/index с безопасными ошибками, строгим config v1 и загрузкой публичных settings/prompt/dictionary; тестами проверить unknown/type/path/secret ошибки и отсутствие действий при импорте.
+- [x] 2.2 Реализовать check и явную передачу env-секретов с prepare-only/manual defaults; проверить отсутствие сети/создания БД и отказы live без ключа/budgets/experimental; добавить пустые env и service config examples с инструкцией.
+- [x] 2.3 Реализовать отдельный init без перезаписи и обязательность пары DB/state для start; тестами подтвердить повтор init, пропавшую БД, повреждённое/несовместимое состояние и сохранение исходных данных.
+- [x] 2.4 Сохранять automaticSince атомарно до первого discover, переиспользовать после restart/disable/enable; тестом reopen и отказа записи подтвердить отсутствие сканирования с новой/несохранённой границей, описать перенос данных.
 
 ## 3. Сборка, управление и диагностика
 
-- [ ] 3.1 Собрать готовые public модули в один foreground runtime после Discord ready; fake Client/HTTP и временная Storage должны подтвердить один listener/run, startup timeout и очистку частично созданных ресурсов без запросов worker до ready.
+- [x] 3.1 Собрать готовые public модули в один foreground runtime после Discord ready; fake Client/HTTP и временная Storage должны подтвердить один listener/run, startup timeout и очистку частично созданных ресурсов без запросов worker до ready.
 - [ ] 3.2 Реализовать идемпотентную остановку/фатальную ошибку и учёт pending publisher Promise с grace; тестами проверить поздний ID до close, hanging transport/deadline, Storage error, повтор сигнала и отсутствие нового POST.
-- [ ] 3.3 Реализовать JSONL logger и fresh local status с revision/mode/readiness и расходами из публичного Storage; тестами проверить stale/failed status, raw secret exception и отсутствие API/генерации при чтении; описать диагностику.
+- [x] 3.3 Реализовать JSONL logger и fresh local status с revision/mode/readiness и расходами из публичного Storage; тестами проверить stale/failed status, raw secret exception и отсутствие API/генерации при чтении; описать диагностику.
 - [ ] 3.4 Подключить CLI check/init/start/status/register-commands/backup и npm scripts; дочерним процессом проверить help/bad args/exit codes/сигналы, явную регистрацию fake REST и отсутствие авто-регистрации на start.
 - [ ] 3.5 Реализовать cold backup DB/state с digest manifest last без перезаписи; тестом повреждения/ошибки копирования и открытия копии подтвердить целостность, написать runbook stop/lock/restore отдельно и обязательную сверку внешних эффектов после старого backup.
 
 ## 4. Linux release и systemd
 
-- [ ] 4.1 Проверить по SSH ОС/architecture/runtime/сервисы/диск указанного VPS; записать безопасную инвентаризацию, выбрать изолированный Node 22 patch и проверить официальный SHA256 без замены системного Node.
-- [ ] 4.2 Подготовить отдельные app/deploy users, каталоги release/data/config и scoped SSH/sudo; убедиться, что root key не загружен в GitHub, другой сервис/права не изменены; описать первоначальную настройку.
+- [x] 4.1 Проверить по SSH ОС/architecture/runtime/сервисы/диск указанного VPS; записать безопасную инвентаризацию, выбрать изолированный Node 22 patch и проверить официальный SHA256 без замены системного Node.
+- [x] 4.2 Подготовить отдельные app/deploy users, каталоги release/data/config и scoped SSH/sudo; убедиться, что root key не загружен в GitHub, другой сервис/права не изменены; описать первоначальную настройку.
 - [ ] 4.3 Создать systemd unit и общий flock wrapper для start/backup; Linux-проверкой подтвердить конфликт второго процесса до действий, restart без stale lock и systemd-analyze verify, соразмерность grace/TimeoutStopSec и отказ рестартов configuration error.
 - [ ] 4.4 Создать allowlist-пакетирование Linux runtime artifact с REVISION/digest; проверить tar inventory без тестов/секретов/БД и успешный offline check распакованной сборки.
 - [ ] 4.5 Реализовать deploy helper: staging release, production lock deps, offline check, stop своего unit, backup, атомарный current, запуск и health нужной revision; локальной Linux sandbox/поддельным systemctl проверить happy path и отказ до переключения.

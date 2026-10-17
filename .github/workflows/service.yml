@@ -24,7 +24,7 @@ jobs:
           - os: windows-latest
             node: 22.14.0
           - os: ubuntu-22.04
-            node: 22.x
+            node: 22.23.3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,3 +36,78 @@ jobs:
       - run: npm ci --ignore-scripts --engine-strict --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
+
+  release:
+    needs: checks
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci --ignore-scripts --engine-strict --no-audit --no-fund
+      - run: npm run build
+      - run: bash -n deploy/receive.sh && bash -n deploy/control.sh
+      - name: Package runtime
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: node deploy/package.mjs "$RELEASE_SHA"
+      - name: Check extracted production install
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .local/smoke
+          tar -xzf .local/artifact/release.tar.gz -C .local/smoke
+          (cd .local/smoke && npm ci --omit=dev --ignore-scripts --engine-strict --no-audit --no-fund)
+          cp .local/smoke/config/group-settings.example.json .local/smoke/config/group-settings.json
+          node .local/smoke/dist/src/operations/cli.js check --config .local/smoke/config/service.example.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: service-${{ github.sha }}
+          path: |
+            .local/artifact/release.tar.gz
+            .local/artifact/release.tar.gz.sha256
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  deploy:
+    needs: release
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: service-${{ github.sha }}
+          path: artifact
+      - name: Deliver checked release
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ && "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
+          mkdir -p "$RUNNER_TEMP/wpf-ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/wpf-ssh/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/wpf-ssh/known_hosts"
+          cd artifact
+          sha256sum --check release.tar.gz.sha256
+          digest=$(sha256sum release.tar.gz | cut -d ' ' -f 1)
+          ssh -i "$RUNNER_TEMP/wpf-ssh/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/wpf-ssh/known_hosts" -o ConnectTimeout=15 "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_SHA $digest" < release.tar.gz

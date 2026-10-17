@@ -2,7 +2,7 @@
 
 Частный Discord-бот для разбора рейтинговых матчей Dota 2: OpenDota → проверяемые факты → MiMo через OpenRouter → русский Discord embed. Выбор может включать одного/двух союзников или честный отказ при недостатке данных.
 
-Node.js >=22.14.0, TypeScript, discord.js, встроенная SQLite. Основной план и состояние модулей: [PROJECT_PLAN.md](PROJECT_PLAN.md). Инструкции модулей находятся рядом с исходниками; общий запуск и CI/CD готовятся в [add-operations](openspec/changes/add-operations/proposal.md).
+Node.js >=22.14.0, TypeScript, discord.js, встроенная SQLite. Основной план и состояние модулей: [PROJECT_PLAN.md](PROJECT_PLAN.md). [Запуск и конфигурация](src/operations/README.md); CI/CD готовятся в [add-operations](openspec/changes/add-operations/proposal.md).
 
 ## Проверки
 
@@ -12,7 +12,7 @@ npm.cmd run typecheck
 npm.cmd test
 ```
 
-В Linux используются npm вместо npm.cmd. GitHub Actions выполняет эти проверки на Windows/Node 22.14.0 и Linux/Node 22.14.0 и 22.x. Тесты работают с синтетическими данными, временными БД и поддельными API. Рабочие ключи для CI не нужны.
+В Linux используются npm вместо npm.cmd. GitHub Actions выполняет эти проверки на Windows/Node 22.14.0 и Linux/Node 22.14.0 и закреплённой production-версии 22.23.3. Тесты работают с синтетическими данными, временными БД и поддельными API. Рабочие ключи для CI не нужны.
 
 ## Данные и доступы
 

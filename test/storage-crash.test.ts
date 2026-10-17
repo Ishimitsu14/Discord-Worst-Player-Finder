@@ -5,8 +5,10 @@ import { createInterface } from 'node:readline';
 import { readFile } from 'node:fs/promises';
 import { fixture, jobInput, errorIs } from './storage-helpers.js';
 
-async function worker(path: string, phase: string, kind = 'analysis') {
-  const child = spawn(process.execPath, ['dist/test/storage-worker.js', path, phase, kind], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+async function worker(path: string, phase: string, kind = 'analysis', ready = async () => {}) {
+  const child = spawn(process.execPath, ['dist/test/storage-worker.js', path, phase, kind], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], windowsHide: true });
+  assert.ok(child.stdout && child.stderr);
+  child.on('message', message => { if (message === 'ready') void ready().then(() => { if (child.connected) child.send('run'); }); });
   let stderr = ''; child.stderr.on('data', data => { stderr += data; });
   const exited = new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('exit', () => resolve()); });
   const lines = createInterface({ input: child.stdout });
@@ -20,6 +22,13 @@ async function worker(path: string, phase: string, kind = 'analysis') {
     });
     return result;
   } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; lines.close(); }
+}
+
+function raceWorkers(path: string, phase: string) {
+  let count = 0, release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const ready = () => { if (++count === 2) release(); return barrier; };
+  return Promise.all([worker(path, phase, 'analysis', ready), worker(path, phase, 'analysis', ready)]);
 }
 
 for (const kind of ['analysis', 'parse', 'publication']) {
@@ -54,13 +63,13 @@ for (const kind of ['analysis', 'parse', 'publication']) {
 
 test('storage: два процесса получают одну задачу без двух владельцев', async t => {
   const f = await fixture(t), store = f.open(), job = store.enqueueInitial(jobInput());
-  const results = await Promise.all([worker(f.path, 'race-claim'), worker(f.path, 'race-claim')]);
+  const results = await raceWorkers(f.path, 'race-claim');
   assert.equal(results.filter(item => item.value === job.id).length, 1); assert.equal(results.filter(item => item.value === null).length, 1);
 });
 
 test('storage: два процесса создают только одну следующую ревизию', async t => {
   const f = await fixture(t), store = f.open(); store.enqueueInitial(jobInput()); store.finish(store.claimNext()!.claim, { state: 'failed', reason: 'test' });
-  const results = await Promise.all([worker(f.path, 'race-revision'), worker(f.path, 'race-revision')]);
+  const results = await raceWorkers(f.path, 'race-revision');
   assert.equal(results.filter(item => item.value).length, 1); assert.equal(results.filter(item => item.error === 'conflict').length, 1);
   assert.equal(store.getLatestJob(101, 'radiant')!.revision, 2);
 });

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "applicationId": "123456789012345678",
+  "groupSettingsPath": "group-settings.json",
+  "dataDir": "data",
+  "automatic": false,
+  "pipeline": {
+    "mode": "prepare-only",
+    "allowExperimental": false
+  }
+}
