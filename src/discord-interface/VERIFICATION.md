@@ -1,3 +1,7 @@
+## Исправление одной команды — production 18 октября 2026
+
+Один /worst во время auto-анализа теперь разрешает отправку после valid без повторной команды; сырой Steam-кандидат не блокирует обычный ручной ID. Исправление доставлено в `609d1e4e8f2729ced4b3f766b95f38527d87ca7d`, [main CI/CD 39071042236](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39071042236) успешен. Windows / Node 22.14.0 — 501 тест: 495 pass/6 Linux-only skip/0 fail; Ubuntu / Node 22.14.0 и 22.23.3 — 501/501. Локальные build/typecheck, focused 25/25 и strict OpenSpec 15/15 успешны. Схема 3, прежняя automaticSince=1792270545647 и рабочие данные сохранены, ready подтверждён read-only. [Полный протокол и ограничения](../operations/VERIFICATION.md). Реальную slash-команду после этой доставки ещё не повторяли; ниже — локальные/исторические этапы.
+
 ## Публикация по одной команде во время анализа — 18 октября 2026
 
 Статус ранней /worst теперь обещает сам отправить отчёт после готовности без повторной команды. Тест вызывает настоящий interface во время fake Gemini inference, проверяет отсутствие POST до valid, прежний claim и одну итоговую отправку. /worst-status остаётся чтением, чужая цель приватна. Общий Windows-набор 501: 495 pass/6 Linux-only skip/0 fail; build/typecheck успешны. [Подробный протокол](../match-pipeline/VERIFICATION.md). CI/production исправления ещё не завершены; ниже — прежние этапы.
