@@ -1,0 +1,264 @@
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "format": {
+      "const": "match-analysis-v1"
+    },
+    "status": {
+      "enum": [
+        "selected",
+        "insufficient-evidence"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "playerAssessments": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerSlot": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              128,
+              129,
+              130,
+              131,
+              132
+            ]
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "enum": [
+              null,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "positionSource": {
+            "enum": [
+              "opendota-estimate",
+              "manual",
+              "unknown"
+            ]
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/claim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contributions": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/$defs/claim"
+            }
+          },
+          "concerns": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/$defs/claim"
+            }
+          },
+          "counterargument": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/claim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limitations": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300,
+              "pattern": "\\S"
+            }
+          }
+        },
+        "required": [
+          "playerSlot",
+          "position",
+          "positionSource",
+          "resources",
+          "contributions",
+          "concerns",
+          "counterargument",
+          "limitations"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "comparison": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/claim"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selectedPlayers": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerSlot": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              128,
+              129,
+              130,
+              131,
+              132
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/$defs/claim"
+            },
+            "minItems": 2
+          },
+          "roast": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "playerSlot",
+          "reasons",
+          "roast"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "closestAlternative": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "playerSlot": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                128,
+                129,
+                130,
+                131,
+                132
+              ]
+            },
+            "reason": {
+              "$ref": "#/$defs/claim"
+            }
+          },
+          "required": [
+            "playerSlot",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "pattern": "\\S"
+      }
+    }
+  },
+  "required": [
+    "version",
+    "format",
+    "status",
+    "confidence",
+    "playerAssessments",
+    "comparison",
+    "selectedPlayers",
+    "closestAlternative",
+    "limitations"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "properties": {
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "pattern": "\\S"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^e[1-9][0-9]*$"
+          }
+        }
+      },
+      "required": [
+        "claim",
+        "evidenceIds"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

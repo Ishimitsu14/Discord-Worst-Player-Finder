@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "selectedPlayers", "comparison", "limitations"],
+  "properties": {
+    "status": { "type": "string", "enum": ["selected", "insufficient-evidence"] },
+    "comparison": { "type": "string", "minLength": 1 },
+    "limitations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "selectedPlayers": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["playerSlot", "explanation", "roast", "reasons"],
+        "properties": {
+          "playerSlot": { "type": "integer", "enum": [0, 1, 2, 3, 4, 128, 129, 130, 131, 132] },
+          "explanation": { "type": "string", "minLength": 1 },
+          "roast": { "type": "string", "minLength": 1 },
+          "reasons": {
+            "type": "array", "minItems": 2, "maxItems": 3,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["claim", "evidenceIds"],
+              "properties": {
+                "claim": { "type": "string", "minLength": 1 },
+                "evidenceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^e[1-9][0-9]*$" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

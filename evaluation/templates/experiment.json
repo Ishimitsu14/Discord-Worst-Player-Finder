@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "corpus": ".local/evaluation/corpus.json",
+  "labels": ".local/evaluation/labels.json",
+  "prompt": "evaluation/prompts/v1",
+  "matches": [
+    { "matchId": 9044556864, "side": "radiant" },
+    { "matchId": 9046778399, "side": "radiant" },
+    { "matchId": 9047349496, "side": "dire" }
+  ],
+  "repeats": 1,
+  "holdoutUntouched": false
+}

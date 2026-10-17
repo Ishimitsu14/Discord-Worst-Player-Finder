@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "mimo-match-v1",
+  "contextFormat": "match-brief-v1",
+  "responseFormat": "match-analysis-v1",
+  "model": "xiaomi/mimo-v2.6-pro",
+  "temperature": 0.2,
+  "maxTokens": 8192,
+  "maxRequestBytes": 262144,
+  "reasoning": "upstream-default",
+  "tokenEstimation": "utf8-bytes-div-2-v1",
+  "provider": { "only": ["deepinfra", "gmicloud", "xiaomi"], "require_parameters": true, "allow_fallbacks": true },
+  "calibration": "experimental",
+  "calibrationReport": null
+}

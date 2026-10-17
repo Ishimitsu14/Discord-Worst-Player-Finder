@@ -1,0 +1,28 @@
+schema: spec-driven
+
+context: |
+  Language: Russian
+  All artifacts must be written in Russian.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Shared roadmap and module boundaries: PROJECT_PLAN.md. Read the selected module and relevant dependencies.
+  Project: private Discord bot for a group of Dota 2 friends.
+  Stack: TypeScript, Node.js, discord.js, SQLite; one service deployed on a VPS.
+  Configure a simple list of the group's Steam32 account IDs, without person or Discord mappings.
+  Analyze ranked matches automatically when at least two listed accounts share a team,
+  and manually by match ID. Select the worst one or two of all five allies, on wins and losses.
+  Use OpenDota for match data and OpenRouter xiaomi/mimo-v2.6-pro for analysis.
+  Publish Russian Discord embeds with a harsh roast supported by match facts.
+  Keep OpenDota transport, match discovery, derived facts, LLM analysis, Discord,
+  persistence, evaluation experiments, and operations as separate logical modules.
+  Calibrate evaluation criteria on real matches before fixing the model instruction.
+  Development takes place on Windows/PowerShell; runtime must also support Linux.
+
+rules:
+  proposal:
+    - State module boundaries and exclusions explicitly.
+  specs:
+    - Cover observable behavior and failure scenarios without implementation details.
+  design:
+    - Distinguish verified upstream behavior from proposed defaults and runtime gaps.
+  tasks:
+    - Keep implementation tasks unchecked until implementation and verification are complete.

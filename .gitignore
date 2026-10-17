@@ -1,0 +1,15 @@
+.agents/
+.codex/
+.env
+.env.*
+!.env.example
+.local/
+node_modules/
+dist/
+.ssh/
+*.pem
+*.key
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
