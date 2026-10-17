@@ -12,7 +12,15 @@ try {
 
 Родительский каталог создаёт вызывающий код. Рабочая БД и rollback journal должны находиться в `.local/` либо вне репозитория, на локальном диске. Не передавайте ключи, HTTP-зависимости и заголовки. Ошибки StorageError содержат только code/operation/message.
 
-Открытие проверяет application ID, user_version, журнал миграций, checksum, quick_check и внешние ключи. Чужой, повреждённый и новый формат отклоняется без очистки. Создание схемы транзакционно. Используются DELETE/FULL, foreign_keys=ON, busy_timeout=1000 мс; busy возвращается без внутреннего повтора. Перед будущим обновлением схемы остановите сервис и сохраните согласованную копию; SQL downgrade отсутствует.
+Открытие проверяет application ID, user_version, журнал миграций, checksum, quick_check и внешние ключи. Чужой, повреждённый и новый формат отклоняется без очистки. Создание схемы транзакционно. Используются DELETE/FULL, foreign_keys=ON, busy_timeout=1000 мс; busy возвращается без внутреннего повтора.
+
+Текущая схема — 3. Первое открытие обновляет схему 1/2 атомарно, сохраняя её исходный checksum, задачи, попытки, результаты и артефакты. **До первого открытия новым кодом** остановите старый сервис и существующим старым релизом сделайте cold backup `app.sqlite` вместе с `operations-state.json`. Старый релиз не читает схему 3; SQL downgrade отсутствует. При откате сохраните новую БД отдельно и используйте совместимые конфиг и БД из backup, учитывая потерю последующих событий при восстановлении старой копии.
+
+## Ожидание данных обнаруженного матча
+
+`observeDiscoveryCandidate({contextKey, matchId, observedAt, expiresAt})` записывает кандидат без стороны или задачи. `contextKey` — SHA-256 канонических настроек компании и automaticSince, без секретов. Повтор обновляет только монотонный lastSeenAt; firstSeenAt, expiresAt, решение и nextCheckAt сохраняются после reopen.
+
+`getDiscoveryCandidate` читает запись; `listDueDiscoveryCandidates(contextKey, limit)` выбирает pending по min(nextCheckAt, expiresAt), firstSeenAt и matchId. `getDiscoveryCounts` возвращает pending/due. `decideDiscoveryCandidate` сохраняет pending либо окончательное admitted/ignored/needs-attention; окончательное решение нельзя автоматически открыть снова. Причины — короткие машинные коды, без URL и тел ошибок. enqueueInitial выполняется перед admitted: восстановление в этом промежутке переиспользует прежнюю задачу без новой ревизии.
 
 `close()` повторяем. Другие операции после закрытия возвращают closed. Пустой путь, URI и `:memory:` запрещены.
 
@@ -83,3 +91,17 @@ getBillingSummary возвращает knownCostUsd, unknownCount и unfinishedE
 getLatestResult возвращает принятый valid selected/insufficient-evidence с исходной calibration и ревизией; неудачная новая задача его не удаляет. Receipt содержит input и inputRef, StartedAttempt, финальный DTO и решения, без их смешивания. Для Discord storage проверяет JSON-объект, цель и размер строки сообщения; Discord-модуль должен отдельно проверить payload и mentions.
 
 Локальная транзакция не гарантирует ровно один эффект у удалённого сервиса. При потере ответа неизвестность остаётся до явного решения. Ошибка COMMIT не разрешает отправку; после переоткрытия читайте журнал, не повторяйте start как проверку его состояния. Проверки: `npm.cmd run typecheck`, `npm.cmd test`; фактические результаты и ограничения — в VERIFICATION.md.
+
+## Схема 3 и Gemini
+
+Текущая схема — **3**. Атомарная миграция 1→3/2→3 добавляет jobs.analysis_profile с default legacy и gemini_recoveries; исходные миграции/checksums 1/2 сохранены. До первого открытия (включая backup новым кодом) остановите сервис и **старым релизом** сделайте cold backup БД и operations-state.json. Старые релизы схему 3 не читают. Для отката сохраните новую БД отдельно, восстановите совместимые старые БД/состояние/config; новые события после backup при этом потеряются. Автоматический SQL downgrade отсутствует.
+
+Профиль enqueueInitial/createRevision по умолчанию legacy и неизменяем. Первый ключ matchId/side общий для обоих профилей; переключение config не создаёт новую ревизию. Старые requestId/digest для legacy работают и при явно переданном legacy. Другой профиль с тем же requestId — conflict.
+
+getJobArtifacts и getLatestResult возвращают различимый analysisProfile; необязательный аргумент legacy/gemini проверяет семейство и сужает тип. У Gemini manifest.sourceDataDigest связан с snapshot, исходные compact bundle, пакет, точное body и оба формата ответа сохраняются без конверсии. Started/final проверяют identity, SSE-поля, формат, игровые evidence и авторство цитаты. Старый последний valid доступен при ошибке новой ревизии.
+
+saveGeminiRecovery(parentAttemptId, recovery)/getGeminiRecovery сохраняют неизменяемый аудируемый итог существующей management-проверки. Только полный eligible final может быть родителем. retry-allowed требует три пустые проверки с интервалами не меньше 10/20/30 секунд и положительный исходный резерв. reserveGeminiRetry(claim, {parentAttemptId, attemptId}) атомарно освобождает unresolved родителя и выдаёт один постоянный дочерний ID на тот же preparedRef. Второго потомка, потомка потомка и обхода через reserveAnalysis после started нет. Ошибка preflight потомка тоже расходует этот допуск.
+
+getBillingSummary сохраняет knownCostUsd/unknownCount/unfinishedEstimatedCostUsd и добавляет reservedCostUsd/uncoveredUnknownCount. Резерв не является списанием. Эффективная management actual cost учитывается один раз без изменения исходного final. recorded без цены остаётся неизвестным и непокрытым, хотя резерв отображается; retry-allowed с резервом покрывает неизвестность родителя для бюджета. Неизвестность legacy, started без final и потомка остаётся непокрытой. Released не стирает расходы.
+
+recoverInterrupted не вызывает сеть: eligible final или решение до выдачи потомка можно продолжить в pipeline; started без final, незавершённый дочерний допуск/started и неизвестная публикация требуют проверки. Принятый valid после crash восстанавливается новой контрольной точкой, сохранённый message ID исключает новый POST.

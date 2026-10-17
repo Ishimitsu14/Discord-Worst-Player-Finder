@@ -1,4 +1,4 @@
-const obj = (properties: Record<string, unknown>) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+const obj = <T extends Record<string, unknown>>(properties: T) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const text = (maxLength: number) => ({ type: 'string', minLength: 1, maxLength, pattern: '\\S' });
 const claim = { $ref: '#/$defs/claim' };
 const nullableClaim = { anyOf: [claim, { type: 'null' }] };
@@ -21,3 +21,11 @@ export const responseSchema = {
   }),
   $defs: { claim: obj({ claim: text(600), evidenceIds: { type: 'array', minItems: 1, maxItems: 12, uniqueItems: true, items: { type: 'string', pattern: '^e[1-9][0-9]*$' } } }) },
 };
+
+export const portableResponseSchema = structuredClone(responseSchema);
+for (const field of [
+  portableResponseSchema.$defs.claim.properties.claim,
+  portableResponseSchema.properties.selectedPlayers.items.properties.roast,
+  portableResponseSchema.properties.playerAssessments.items.properties.limitations.items,
+  portableResponseSchema.properties.limitations.items,
+]) delete (field as Record<string, unknown>).pattern;

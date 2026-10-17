@@ -7,10 +7,10 @@ import { deferred } from './opendota-helpers.js';
 
 test('publisher sees accepted literal analysis, original target, exact persisted JSON and admission before send', async t => {
   const fx = await fixture(t), first = fx.pipe(live); const job = await fx.request(first); await fx.process(first);
-  assert.equal(fx.storage.getLatestResult(101, 'radiant')!.attempt.analysis!.status, 'selected'); await first.stop(); await fx.clock.tick(300000);
+  assert.equal(fx.storage.getLatestResult(101, 'radiant', 'legacy')!.attempt.analysis!.status, 'selected'); await first.stop(); await fx.clock.tick(300000);
   let sends = 0, prepares = 0; const message = '{ "content": "Точный тестовый текст", "allowed_mentions": {"parse": []} }';
   const pipeline = fx.pipe(live, { settings: { ...settings, channelId: '123' }, publisher: {
-    prepare(input) { prepares++; assert.equal(input.job.id, job.id); assert.equal(input.analysis.status, 'valid'); assert.equal(input.bundle.context.allies.length, 5); assert.equal(input.snapshot.data.match_id, 101); return message; },
+    prepare(input) { assert.notEqual(input.analysisProfile, 'gemini'); if (input.analysisProfile === 'gemini') assert.fail(); prepares++; assert.equal(input.job.id, job.id); assert.equal(input.analysis.status, 'valid'); assert.equal(input.bundle.context.allies.length, 5); assert.equal(input.snapshot.data.match_id, 101); return message; },
     async send(input) {
       sends++; const receipt = fx.storage.listAttempts(job.id).find(item => item.kind === 'publication')!;
       assert.equal(receipt.state, 'started'); assert.equal(receipt.unresolved, true); assert.deepEqual(input, receipt.input);
@@ -25,7 +25,7 @@ test('publisher sees accepted literal analysis, original target, exact persisted
 test('insufficient-evidence and valid with unknown cost publish literally; later generation stays blocked', async t => {
   const fx = await fixture(t); let published = '';
   fx.hooks.analysis = (url, init) => url.endsWith('/endpoints') ? undefined : response(init.body, null, true);
-  const pipeline = fx.pipe(live, { publisher: { prepare(input) { assert.deepEqual(input.analysis.analysis!.selectedPlayers, []); published = input.analysis.analysis!.status; return '{}'; }, send: fx.publisher.send } });
+  const pipeline = fx.pipe(live, { publisher: { prepare(input) { if (input.analysisProfile === 'gemini') assert.fail(); assert.deepEqual(input.analysis.analysis!.selectedPlayers, []); published = input.analysis.analysis!.status; return '{}'; }, send: fx.publisher.send } });
   const job = await fx.request(pipeline); assert.equal((await fx.process(pipeline)).state, 'succeeded'); assert.equal(published, 'insufficient-evidence');
   const before = fx.calls.length, status = pipeline.getStatus({ jobId: job.id }); assert.equal(status.attention, true); assert.equal(status.billingUnknown, true); assert.equal(fx.calls.length, before);
   fx.matches.set(102, data(102)); await fx.request(pipeline, 102); assert.equal((await fx.process(pipeline)).reason, 'budget-unknown'); assert.equal(fx.posts('analysis').length, 1);

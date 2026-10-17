@@ -13,13 +13,13 @@ test('prepare-only basic stores snapshot without admission; parsed stores facts/
   const fx = await fixture(t); fx.matches.set(101, data(101, false)); const pipeline = fx.pipe();
   const job = await fx.request(pipeline); const waiting = await fx.process(pipeline);
   assert.equal(waiting.reason, 'parse-disabled'); assert.equal(waiting.step, 'wait-parse');
-  assert.equal(fx.storage.listAttempts(job.id).length, 0); assert.equal(fx.storage.getJobArtifacts(job.id).snapshot!.parseState, 'basic');
+  assert.equal(fx.storage.listAttempts(job.id).length, 0); assert.equal(fx.storage.getJobArtifacts(job.id, 'legacy').snapshot!.parseState, 'basic');
   fx.matches.set(101, data()); await fx.clock.tick(300000);
-  const preparedJob = await fx.process(pipeline), artifacts = fx.storage.getJobArtifacts(job.id);
+  const preparedJob = await fx.process(pipeline), artifacts = fx.storage.getJobArtifacts(job.id, 'legacy');
   assert.equal(preparedJob.reason, 'live-disabled'); assert.equal(preparedJob.resultAttemptId, null);
   assert.equal(artifacts.bundle!.context.allies.length, 5); assert.ok(artifacts.bundle!.facts.quality); assert.ok(artifacts.bundle!.context.coverage);
   assert.deepEqual(verifyFactsBundle(artifacts.bundle, { matchId: 101, side: 'radiant', data: artifacts.snapshot!.data }, { dictionary }), artifacts.bundle);
-  assert.equal(artifacts.prepared!.body, (fx.storage.getJobArtifacts(job.id).prepared as PreparedAnalysis).body);
+  assert.equal(artifacts.prepared!.body, (fx.storage.getJobArtifacts(job.id, 'legacy').prepared as PreparedAnalysis).body);
   assert.equal(fx.posts('analysis').length + fx.posts('parse').length, 0);
 });
 
@@ -74,13 +74,13 @@ test('GET cooldown defers without a new parse admission and permanent failures s
 
 test('prepared body and package survive reopen/current instruction changes and optional data enrichment', async t => {
   const fx = await fixture(t), preparation = fx.pipe(); const job = await fx.request(preparation); await fx.process(preparation);
-  const saved = fx.storage.getJobArtifacts(job.id), body = saved.prepared!.body, snapshot = saved.snapshot;
+  const saved = fx.storage.getJobArtifacts(job.id, 'legacy'), body = saved.prepared!.body, snapshot = saved.snapshot;
   await preparation.stop(); fx.reopen();
   const files = { ...prompt.files, 'instruction.md': prompt.files['instruction.md'] + '\nДругая инструкция.' }; const changedPrompt = createPromptPackage(files, prompt.calibrationEvidence);
   const pipeline = fx.pipe(live, { prompt: changedPrompt }); fx.matches.get(101)!.players[0].hero_damage = 90000;
   await fx.clock.tick(300000); const result = await fx.process(pipeline);
-  assert.equal(result.reason, 'publisher-unavailable'); assert.equal(fx.posts('analysis')[0].body, body); assert.deepEqual(fx.storage.getJobArtifacts(job.id).snapshot, snapshot);
-  assert.equal(fx.storage.getLatestResult(101, 'radiant')!.attempt.status, 'valid');
+  assert.equal(result.reason, 'publisher-unavailable'); assert.equal(fx.posts('analysis')[0].body, body); assert.deepEqual(fx.storage.getJobArtifacts(job.id, 'legacy').snapshot, snapshot);
+  assert.equal(fx.storage.getLatestResult(101, 'radiant', 'legacy')!.attempt.status, 'valid');
 });
 
 test('essential prepared input changes fail before any paid request; automatic eligibility is checked again', async t => {

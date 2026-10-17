@@ -40,7 +40,9 @@ if (phase === 'race-claim' || phase === 'race-revision') {
     DatabaseSync.prototype.exec = function(sql: string) { if (sql === 'COMMIT') pause({ jobId: current.job.id, attemptId }); return original.call(this, sql); };
   }
   if (kind === 'analysis') {
-    const receipt = store.listAttempts(current.job.id).find(item => item.id === attemptId)!; store.saveAnalysisOutcome(attemptId, invalidAttempt(receipt.started!));
+    const receipt = store.listAttempts(current.job.id).find(item => item.id === attemptId)!;
+    if (receipt.started!.responseFormat !== 'match-analysis-v1') throw Error('unexpected profile');
+    store.saveAnalysisOutcome(attemptId, invalidAttempt({ ...receipt.started!, responseFormat: 'match-analysis-v1' }));
   } else if (kind === 'parse') store.saveParseOutcome(attemptId, { jobId: '588786891' });
   else store.savePublicationOutcome(attemptId, { messageId: '18446744073709551615' });
   pause({ jobId: current.job.id, attemptId });

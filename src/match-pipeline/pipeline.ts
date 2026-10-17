@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { analyzeMatch, prepareAnalysis, AnalysisError, type AnalysisAttempt } from '../match-analysis/index.js';
-import { FactsError, prepareMatchFacts } from '../match-facts/index.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { analyzeMatch, analyzeGeminiMatch, checkGeminiRecovery, prepareAnalysis, prepareGeminiAnalysis, geminiRecoveryEligible, isGeminiAttempt, AnalysisError, type RuntimeAttempt } from '../match-analysis/index.js';
+import { FactsError, prepareMatchFacts, prepareCompactMatchFacts } from '../match-facts/index.js';
 import { OpenDotaError, type MatchSnapshot, type OpenDotaErrorSummary, type PlayerMatch } from '../opendota/index.js';
-import { StorageError, type Claim, type Inputs, type JobArtifacts, type Receipt, type PublicationOutcome } from '../storage/index.js';
+import { StorageError, type Claim, type DiscoveryCandidate, type Inputs, type JobArtifacts, type Receipt, type PublicationOutcome } from '../storage/index.js';
+import { SteamHistoryError } from '../steam/index.js';
 import { classify, endAt, supported } from './classify.js';
 import { configure, ensure, fields, id, integer, object, snowflake } from './config.js';
 import { PipelineError, PublicationError, type Clock, type DiscoveryReport, type Job, type MatchPipeline, type MatchRequestResult,
@@ -12,7 +13,7 @@ import { PipelineError, PublicationError, type Clock, type DiscoveryReport, type
 interface Execution { job: Job; claim: Claim; controller: AbortController; lost: boolean; timer?: unknown }
 const nativeClock: Clock = { now: Date.now, setTimeout: (callback, ms) => setTimeout(callback, ms), clearTimeout: timer => clearTimeout(timer as ReturnType<typeof setTimeout>) };
 const transient = new Set(['network_error', 'timeout', 'upstream_error', 'rate_limited']);
-const outcome = (receipt: Receipt): AnalysisAttempt | null => receipt.kind === 'analysis' ? receipt.outcome as AnalysisAttempt | null : null;
+const outcome = (receipt: Receipt): RuntimeAttempt | null => receipt.kind === 'analysis' ? receipt.outcome as RuntimeAttempt | null : null;
 const reasons = /^(?:parse-disabled|parse-pending|parse-timeout|parse-request-failed|shared-parse-unknown|live-disabled|experimental-disabled|publisher-unavailable|publication-invalid|publication-pending|publication-late-outcome|publication-failed|budget-unknown|budget-exhausted|estimated-cost-exceeded|input-changed|eligibility-changed|facts-invalid|analysis-input-invalid|released-analysis-present|analysis-not-sent-after-start|external-outcome-unknown|processing-failed|aborted|opendota-(?:invalid_argument|not_found|unauthorized|forbidden|bad_request|rate_limited|network_error|timeout|upstream_error|invalid_response|aborted)|analysis-(?:preflight-failed|invalid-output|api-error|transport-error|timed-out|aborted|cooldown|metadata-unavailable|unsupported-endpoint|unknown-price|estimated-cost-exceeded|before-send-failed|invalid-input|missing-key|secret-in-input|secret-in-output)|publication-(?:unavailable|forbidden|invalid-message|rate-limited|transport-error|publication-unknown))$/;
 
 class Pipeline implements MatchPipeline {
@@ -52,7 +53,16 @@ class Pipeline implements MatchPipeline {
   }
   private signal(signal?: AbortSignal): AbortSignal { return signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal; }
   private cutoff(): number { if (this.config.automaticSince === undefined) throw new PipelineError('automatic-since-required'); return this.config.automaticSince; }
-  private jobEvent(job: Job): void { this.emit({ type: 'job', jobId: job.id, matchId: job.matchId, side: job.side, revision: job.revision, state: job.state, step: job.step, ...(job.reason ? { code: reasons.test(job.reason) ? job.reason : 'stored-reason' } : {}) }); }
+  private discoveryContext(): string {
+    return createHash('sha256').update(JSON.stringify({ steamAccountIds: [...this.deps.settings.steamAccountIds].sort((a, b) => a - b),
+      guildId: this.deps.settings.guildId, channelId: this.deps.settings.channelId, automaticSince: this.cutoff() })).digest('hex');
+  }
+  private jobEvent(job: Job): void {
+    const { knownCostUsd, reservedCostUsd, uncoveredUnknownCount } = this.db(() => this.deps.storage.getBillingSummary({ jobId: job.id }));
+    const safe = job.reason && (reasons.test(job.reason) || /^(?:analysis-profile-unavailable|gemini-(?:recovery-unavailable|request-recorded|retry-consumed))$/.test(job.reason));
+    this.emit({ type: 'job', jobId: job.id, matchId: job.matchId, side: job.side, revision: job.revision, state: job.state, step: job.step,
+      knownCostUsd, reservedCostUsd, uncoveredUnknownCount, ...(job.reason ? { code: safe ? job.reason : 'stored-reason' } : {}) });
+  }
   private readOptions(options: RequestOptions): void { fields(options, [], ['signal']); ensure(options.signal === undefined || options.signal instanceof AbortSignal); }
   private requestInput(input: unknown, revision = false): asserts input is { matchId: number; side?: Side; requestId?: string } {
     fields(input, revision ? ['matchId', 'side', 'requestId'] : ['matchId'], revision ? [] : ['side']);
@@ -60,17 +70,35 @@ class Pipeline implements MatchPipeline {
   }
   private enqueue(matchId: number, side: Side, origin: Job['origin']): MatchRequestResult {
     const previous = this.db(() => this.deps.storage.getLatestJob(matchId, side));
-    const job = this.db(() => this.deps.storage.enqueueInitial({ matchId, side, origin, settings: this.deps.settings }));
+    const job = this.db(() => this.deps.storage.enqueueInitial({ matchId, side, origin, settings: this.deps.settings, analysisProfile: this.config.analysisProfile }));
     this.jobEvent(job); return { status: previous ? 'existing' : 'queued', job, result: this.db(() => this.deps.storage.getLatestResult(matchId, side)) };
   }
   requestMatch(input: { matchId: number; side?: Side }, options: RequestOptions = {}): Promise<MatchRequestResult> {
     return this.track(async () => {
       this.readOptions(options); this.check(options.signal); this.requestInput(input); const signal = this.signal(options.signal);
       if (input.side && this.db(() => this.deps.storage.getLatestJob(input.matchId, input.side!))) return this.enqueue(input.matchId, input.side, 'manual');
+      if (!input.side) {
+        const existing = (['radiant', 'dire'] as const).filter(side => this.db(() => this.deps.storage.getLatestJob(input.matchId, side)));
+        if (existing.length > 1) return { status: 'requires-side', matchId: input.matchId, code: 'ambiguous-side' };
+        if (existing.length === 1) return this.enqueue(input.matchId, existing[0], 'manual');
+      }
+      let candidate = this.config.historySource === 'steam' && this.config.automaticSince !== undefined
+        ? this.db(() => this.deps.storage.getDiscoveryCandidate(this.discoveryContext(), input.matchId)) : null;
+      if (candidate?.state === 'pending') {
+        if (candidate.expiresAt > this.clock.now()) return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'opendota-pending', nextCheckAt: candidate.nextCheckAt };
+        candidate = this.decide(candidate, 'needs-attention', 'discovery-timeout');
+      }
       let snapshot: MatchSnapshot;
       try { snapshot = await this.deps.opendota.getMatch(input.matchId, { fresh: true, signal }); }
-      catch { this.check(signal); throw new PipelineError('opendota-failure'); }
+      catch {
+        this.check(signal);
+        if (candidate?.state === 'needs-attention') return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'discovery-stopped', nextCheckAt: null };
+        throw new PipelineError('opendota-failure');
+      }
       this.check(signal); const result = classify(snapshot.data, this.deps.settings, 'manual', input.side);
+      if (candidate?.state === 'needs-attention' && (!endAt(snapshot.data, this.clock.now()) || snapshot.data.radiant_win === null || result.status === 'rejected' && result.code === 'incomplete-allies')) {
+        return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'discovery-stopped', nextCheckAt: null };
+      }
       if (result.status !== 'eligible') return { ...result, matchId: input.matchId };
       return this.enqueue(input.matchId, result.side, 'manual');
     });
@@ -84,7 +112,7 @@ class Pipeline implements MatchPipeline {
       this.check(signal); const classified = classify(snapshot.data, this.deps.settings, 'manual', input.side);
       if (classified.status !== 'eligible') return { ...classified, matchId: input.matchId };
       let job: Job;
-      try { job = this.deps.storage.createRevision({ ...input, settings: this.deps.settings }); }
+      try { job = this.deps.storage.createRevision({ ...input, settings: this.deps.settings, analysisProfile: this.config.analysisProfile }); }
       catch (error) { if (error instanceof StorageError && (error.code === 'conflict' || error.code === 'not-found')) throw new PipelineError(error.code); throw this.failStorage(); }
       this.jobEvent(job); return { status: 'queued', job, result: this.db(() => this.deps.storage.getLatestResult(job.matchId, job.side)) };
     });
@@ -96,6 +124,7 @@ class Pipeline implements MatchPipeline {
       if (this.scanning) return report;
       this.scanning = true; const signal = this.signal(options.signal), candidates = new Map<number, PlayerMatch[]>();
       try {
+        if (this.config.historySource === 'steam') return await this.discoverSteam(report, signal);
         for (const accountId of this.deps.settings.steamAccountIds) {
           for (let page = 0; page < this.config.maxPagesPerAccount; page++) {
             this.check(signal); let rows: PlayerMatch[];
@@ -138,6 +167,82 @@ class Pipeline implements MatchPipeline {
         return report;
       } finally { this.scanning = false; }
     });
+  }
+  private decide(candidate: DiscoveryCandidate, state: DiscoveryCandidate['state'], reason: string | null, retryAt = 0): DiscoveryCandidate {
+    return this.db(() => this.deps.storage.decideDiscoveryCandidate({ contextKey: candidate.contextKey, matchId: candidate.matchId, state, reason,
+      nextCheckAt: state === 'pending' ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(this.clock.now() + this.config.discoveryRetryMs, retryAt)) : null }));
+  }
+  private async discoverSteam(report: DiscoveryReport, signal: AbortSignal): Promise<DiscoveryReport> {
+    ensure(this.deps.steam, 'invalid-config');
+    const contextKey = this.discoveryContext(), seen = new Set<number>(); let added = 0, blocked = false;
+    report.deferred = 0; report.checks = 0; report.accountsChecked = 0;
+    for (const accountId of this.deps.settings.steamAccountIds) {
+      if (blocked) { report.errors.push({ accountId, code: 'steam-unchecked' }); continue; }
+      report.accountsChecked++; let cursor: number | undefined;
+      for (let page = 0; page < this.config.maxPagesPerAccount; page++) {
+        this.check(signal);
+        let history;
+        try { history = await this.deps.steam.getMatchHistory(accountId, { limit: this.config.pageSize, ...(cursor === undefined ? {} : { startAtMatchId: cursor }), signal }); }
+        catch (error) {
+          this.check(signal); const code = error instanceof SteamHistoryError ? `steam-${error.code}` : 'steam-failure';
+          report.partial = true; report.errors.push({ accountId, code }); this.emit({ type: 'discovery', accountId, code });
+          blocked = error instanceof SteamHistoryError && ['unauthorized', 'forbidden', 'rate-limited'].includes(error.code); break;
+        }
+        this.check(signal); report.pages++;
+        for (const row of history.matches) {
+          if (seen.has(row.matchId)) continue; seen.add(row.matchId);
+          const previous = this.db(() => this.deps.storage.getDiscoveryCandidate(contextKey, row.matchId));
+          if (!previous && added >= this.config.maxCandidatesPerScan) { report.deferred++; report.partial = true; continue; }
+          const expiresAt = report.scanAt + this.config.discoveryTimeoutMs;
+          ensure(integer(expiresAt, report.scanAt + 1), 'invalid-config');
+          this.db(() => this.deps.storage.observeDiscoveryCandidate({ contextKey, matchId: row.matchId, observedAt: report.scanAt, expiresAt }));
+          if (!previous) added++;
+        }
+        if (history.nextStartAtMatchId === null) break;
+        cursor = history.nextStartAtMatchId;
+        if (page + 1 === this.config.maxPagesPerAccount) report.partial = true;
+      }
+    }
+    report.candidates = seen.size;
+    const due = this.db(() => this.deps.storage.listDueDiscoveryCandidates(contextKey, this.config.maxDiscoveryChecksPerScan));
+    for (const candidate of due) {
+      this.check(signal); report.checks++;
+      if (candidate.expiresAt <= this.clock.now()) { this.decide(candidate, 'needs-attention', 'discovery-timeout'); report.rejected.push({ matchId: candidate.matchId, code: 'discovery-timeout' }); continue; }
+      let snapshot: MatchSnapshot;
+      try { snapshot = await this.deps.opendota.getMatch(candidate.matchId, { fresh: true, signal }); }
+      catch (error) {
+        this.check(signal); const code = this.readCode(error).replaceAll('_', '-');
+        const retry = error instanceof OpenDotaError && (error.code === 'not_found' || transient.has(error.code));
+        this.decide(candidate, retry ? 'pending' : 'needs-attention', code, error instanceof OpenDotaError ? error.retryAt ?? 0 : 0);
+        report.partial = true; report.errors.push({ matchId: candidate.matchId, code }); continue;
+      }
+      this.check(signal);
+      if (candidate.expiresAt <= this.clock.now()) { this.decide(candidate, 'needs-attention', 'discovery-timeout'); report.rejected.push({ matchId: candidate.matchId, code: 'discovery-timeout' }); continue; }
+      const end = endAt(snapshot.data, this.clock.now());
+      if (end === null || snapshot.data.radiant_win === null) { this.decide(candidate, 'pending', 'opendota-pending'); continue; }
+      if (end <= report.cutoff || !supported(snapshot.data)) {
+        const code = end <= report.cutoff ? 'outside-window' : 'unsupported-match';
+        this.decide(candidate, 'ignored', code); report.rejected.push({ matchId: candidate.matchId, code }); continue;
+      }
+      const result = classify(snapshot.data, this.deps.settings, 'automatic');
+      if (result.status === 'eligible') {
+        const queued = this.enqueue(candidate.matchId, result.side, 'automatic');
+        if ('job' in queued) report[queued.status === 'queued' ? 'queued' : 'existing'].push(queued.job.id);
+        this.decide(candidate, 'admitted', null);
+      } else if (result.status === 'rejected' && (result.code === 'incomplete-allies' || result.code === 'not-group-match' && snapshot.data.players.length < 10)) {
+        this.decide(candidate, 'pending', 'incomplete-allies');
+      } else {
+        this.decide(candidate, 'needs-attention', result.code);
+        if (result.status === 'requires-side') report.requiresSide.push(candidate.matchId);
+        else report.rejected.push({ matchId: candidate.matchId, code: result.code });
+      }
+    }
+    const counts = this.db(() => this.deps.storage.getDiscoveryCounts(contextKey));
+    report.pending = counts.pending; report.deferred += counts.due; if (counts.pending > 0) report.partial = true;
+    this.emit({ type: 'discovery', pages: report.pages, candidates: report.candidates, queued: report.queued.length, existing: report.existing.length,
+      rejected: report.rejected.length, requiresSide: report.requiresSide.length, errors: report.errors.length, partial: report.partial,
+      pending: report.pending, deferred: report.deferred, checks: report.checks, accountsChecked: report.accountsChecked });
+    return report;
   }
   private readCode(error: unknown): string { return error instanceof OpenDotaError ? `opendota-${error.code}` : 'opendota-failure'; }
   private owned(ctx: Execution): void {
@@ -209,12 +314,17 @@ class Pipeline implements MatchPipeline {
     if (valid) this.checkpoint(ctx, 'publish', valid.id);
     const publication = attempts.find(item => item.kind === 'publication' && item.outcome && 'messageId' in item.outcome);
     if (publication) return this.finish(ctx, 'succeeded');
-    if (attempts.some(item => item.unresolved && !item.released)) return this.finish(ctx, 'needs-attention', 'external-outcome-unknown');
+    if (!valid && attempts.some(item => outcome(item) && geminiRecoveryEligible(outcome(item)!)
+      && this.db(() => this.deps.storage.getGeminiRecovery(item.id))?.retryAttemptId)) return this.finish(ctx, 'needs-attention', 'gemini-retry-consumed');
+    const root = attempts.find(item => outcome(item) && geminiRecoveryEligible(outcome(item)!));
+    if (!valid && root && artifacts.analysisProfile === 'gemini') return this.recoverGemini(ctx, artifacts, root);
+    if (attempts.some(item => item.unresolved && !item.released && item.id !== valid?.id)) return this.finish(ctx, 'needs-attention', 'external-outcome-unknown');
     if (valid) return this.publish(ctx, artifacts, outcome(valid)!);
     const sentFailure = attempts.find(item => !item.released && outcome(item)?.requestSent);
     if (sentFailure) return this.finish(ctx, 'failed', `analysis-${outcome(sentFailure)!.status}`);
     const parseFailure = attempts.find(item => item.kind === 'parse' && !item.released && item.outcome && 'error' in item.outcome);
     if (parseFailure) return this.finish(ctx, 'failed', 'parse-request-failed');
+    if (ctx.job.analysisProfile === 'gemini' && (!this.deps.geminiPrompt || !this.deps.heroMetricsDictionary)) return this.defer(ctx, 'analysis-profile-unavailable');
     this.guard(ctx); const snapshot = await this.deps.opendota.getMatch(ctx.job.matchId, { fresh: true, signal: ctx.controller.signal }); this.guard(ctx);
     if (artifacts.prepared && (!artifacts.snapshot || !this.sameInput(artifacts.snapshot, snapshot))) return this.finish(ctx, 'failed', 'input-changed');
     const eligibility = classify(snapshot.data, ctx.job.settings, ctx.job.origin, ctx.job.origin === 'manual' ? ctx.job.side : undefined);
@@ -226,10 +336,15 @@ class Pipeline implements MatchPipeline {
     this.saveInputs(ctx, { snapshot });
     if (snapshot.parseState !== 'parsed') { this.checkpoint(ctx, 'wait-parse'); return this.waitParse(ctx); }
     this.checkpoint(ctx, 'build-facts'); this.guard(ctx);
-    const bundle = prepareMatchFacts({ matchId: ctx.job.matchId, side: ctx.job.side, data: snapshot.data }, this.deps.facts);
-    const prepared = prepareAnalysis(bundle, this.deps.prompt);
+    if (ctx.job.analysisProfile === 'gemini') {
+      const bundle = prepareCompactMatchFacts({ matchId: ctx.job.matchId, side: ctx.job.side, data: snapshot.data }, { ...this.deps.facts, heroMetricsDictionary: this.deps.heroMetricsDictionary });
+      const prepared = prepareGeminiAnalysis(bundle, this.deps.geminiPrompt!);
+      this.saveInputs(ctx, { bundle, prepared }); this.checkpoint(ctx, 'analyze');
+      return this.analyze(ctx, { analysisProfile: 'gemini', snapshot, bundle, prepared });
+    }
+    const bundle = prepareMatchFacts({ matchId: ctx.job.matchId, side: ctx.job.side, data: snapshot.data }, this.deps.facts), prepared = prepareAnalysis(bundle, this.deps.prompt);
     this.saveInputs(ctx, { bundle, prepared }); this.checkpoint(ctx, 'analyze');
-    return this.analyze(ctx, { snapshot, bundle, prepared });
+    return this.analyze(ctx, { analysisProfile: 'legacy', snapshot, bundle, prepared });
   }
   private sameInput(first: MatchSnapshot, fresh: MatchSnapshot): boolean {
     const essential = (snapshot: MatchSnapshot) => ({ duration: snapshot.data.duration, outcome: snapshot.data.radiant_win, mode: snapshot.data.game_mode, lobby: snapshot.data.lobby_type,
@@ -265,26 +380,29 @@ class Pipeline implements MatchPipeline {
   }
   private budget(): { limit: number; reason: null } | { limit: 0; reason: string } {
     const billing = this.db(() => this.deps.storage.getBillingSummary());
-    if (billing.unknownCount > 0) return { limit: 0, reason: 'budget-unknown' };
-    const remaining = this.config.maxTotalCostUsd! - billing.knownCostUsd;
+    if (billing.uncoveredUnknownCount > 0) return { limit: 0, reason: 'budget-unknown' };
+    const remaining = this.config.maxTotalCostUsd! - billing.knownCostUsd - billing.reservedCostUsd;
     if (remaining <= 0) return { limit: 0, reason: 'budget-exhausted' };
     return { limit: Math.min(remaining, this.config.maxEstimatedCostPerAttemptUsd!), reason: null };
   }
-  private async analyze(ctx: Execution, artifacts: JobArtifacts): Promise<Job> {
+  private async analyze(ctx: Execution, artifacts: JobArtifacts, retry?: Receipt): Promise<Job> {
     if (this.config.mode !== 'live') return this.defer(ctx, 'live-disabled');
     if (this.attempts(ctx).some(item => item.released && outcome(item)?.status === 'valid')) return this.finish(ctx, 'failed', 'released-analysis-present');
     if (artifacts.prepared!.calibration === 'experimental' && !this.config.allowExperimental) return this.defer(ctx, 'experimental-disabled');
-    const budget = this.budget(); if (budget.reason) return this.defer(ctx, budget.reason);
-    this.guard(ctx); const receipt = this.db(() => this.deps.storage.reserveAnalysis(ctx.claim, { attemptId: randomUUID(), preparedRef: ctx.job.refs.prepared! }));
+    const budget = this.budget(); if (budget.reason && !retry) return this.defer(ctx, budget.reason);
+    this.guard(ctx); const receipt = retry ?? this.db(() => this.deps.storage.reserveAnalysis(ctx.claim, { attemptId: randomUUID(), preparedRef: ctx.job.refs.prepared! }));
     let denial: string | null = null, started = false;
-    const result = await analyzeMatch(artifacts.prepared!, artifacts.bundle!, { attemptId: receipt.id, maxEstimatedCostUsd: budget.limit, timeoutMs: this.config.analysisTimeoutMs }, {
+    const dependencies = {
       apiKey: this.deps.apiKey!, fetcher: this.deps.fetcher, signal: ctx.controller.signal,
-      beforeSend: async attempt => {
+      beforeSend: async (attempt: import('../match-analysis/index.js').RuntimeStarted) => {
         this.guard(ctx); const current = this.budget();
         if (current.reason || attempt.estimatedCostUsd > current.limit) { denial = current.reason ?? 'estimated-cost-exceeded'; throw new PipelineError('aborted'); }
         this.db(() => this.deps.storage.startAnalysis(ctx.claim, receipt.id, attempt)); started = true;
       },
-    });
+    };
+    const options = { attemptId: receipt.id, maxEstimatedCostUsd: budget.reason ? this.config.maxEstimatedCostPerAttemptUsd! : budget.limit, timeoutMs: this.config.analysisTimeoutMs };
+    const result = artifacts.analysisProfile === 'gemini' ? await analyzeGeminiMatch(artifacts.prepared!, artifacts.bundle!, options, dependencies)
+      : await analyzeMatch(artifacts.prepared!, artifacts.bundle!, options, dependencies);
     try { this.deps.storage.saveAnalysisOutcome(receipt.id, result); }
     catch (error) {
       if (started && !result.requestSent && error instanceof StorageError && error.code === 'conflict') {
@@ -299,9 +417,37 @@ class Pipeline implements MatchPipeline {
       if (ctx.controller.signal.aborted) return this.defer(ctx, 'aborted');
       return this.publish(ctx, artifacts, result);
     }
-    if (result.requestSent) return this.finish(ctx, 'failed', `analysis-${result.status}`);
+    if (artifacts.analysisProfile === 'gemini' && result.requestSent && result.billingState === 'unknown') {
+      if (!retry && geminiRecoveryEligible(result)) return this.recoverGemini(ctx, artifacts, this.attempts(ctx).find(item => item.id === receipt.id)!);
+      return this.finish(ctx, 'needs-attention', 'external-outcome-unknown');
+    }
+    if (result.requestSent || retry) return this.finish(ctx, 'failed', `analysis-${result.status}`);
     const retryAt = result.retryAt ? Date.parse(result.retryAt) : 0;
     return this.defer(ctx, denial ?? `analysis-${result.error?.code ?? 'preflight-failed'}`, this.config.pauseMs, Number.isFinite(retryAt) ? retryAt : 0);
+  }
+  private async recoverGemini(ctx: Execution, artifacts: Extract<JobArtifacts, { analysisProfile: 'gemini' }>, parent: Receipt): Promise<Job> {
+    const child = this.attempts(ctx).some(item => outcome(item) && geminiRecoveryEligible(outcome(item)!)
+      && this.db(() => this.deps.storage.getGeminiRecovery(item.id))?.retryAttemptId === parent.id);
+    if (child) return this.finish(ctx, 'needs-attention', 'gemini-retry-consumed');
+    if (this.config.mode !== 'live' || !this.deps.managementKey) return this.finish(ctx, 'needs-attention', 'gemini-recovery-unavailable');
+    const attempt = outcome(parent)!;
+    if (!geminiRecoveryEligible(attempt) || !artifacts.prepared) return this.finish(ctx, 'needs-attention', 'external-outcome-unknown');
+    let saved = this.db(() => this.deps.storage.getGeminiRecovery(parent.id));
+    if (!saved) {
+      this.guard(ctx);
+      const recovery = await checkGeminiRecovery(artifacts.prepared, attempt, { managementKey: this.deps.managementKey, fetcher: this.deps.fetcher,
+        signal: ctx.controller.signal, wait: (ms, signal) => this.sleep(ms, signal), now: () => this.clock.now() });
+      this.db(() => this.deps.storage.saveGeminiRecovery(parent.id, recovery));
+      saved = this.db(() => this.deps.storage.getGeminiRecovery(parent.id));
+    }
+    this.guard(ctx);
+    if (saved!.recovery.status === 'recorded') return this.finish(ctx, 'needs-attention', 'gemini-request-recorded');
+    if (saved!.recovery.status !== 'retry-allowed') return this.finish(ctx, 'needs-attention', 'gemini-recovery-unavailable');
+    if (saved!.retryAttemptId) return this.finish(ctx, 'needs-attention', 'gemini-retry-consumed');
+    const budget = this.budget();
+    if (budget.reason || attempt.estimatedCostUsd! > budget.limit) return this.finish(ctx, 'needs-attention', budget.reason ?? 'estimated-cost-exceeded');
+    const receipt = this.db(() => this.deps.storage.reserveGeminiRetry(ctx.claim, { parentAttemptId: parent.id, attemptId: randomUUID() }));
+    return this.analyze(ctx, artifacts, receipt);
   }
   private publicationOutcome(value: unknown, rejected: boolean): PublicationOutcome {
     if (!rejected && object(value) && snowflake(value.messageId)) return { messageId: value.messageId };
@@ -309,13 +455,16 @@ class Pipeline implements MatchPipeline {
       && ['unavailable', 'forbidden', 'invalid-message', 'rate-limited', 'transport-error'].includes(value.code)) return { state: value.outcome, code: value.code };
     return { state: 'unknown', code: 'publication-unknown' };
   }
-  private async publish(ctx: Execution, artifacts: JobArtifacts, analysis: AnalysisAttempt): Promise<Job> {
+  private async publish(ctx: Execution, artifacts: JobArtifacts, analysis: RuntimeAttempt): Promise<Job> {
     const previous = this.attempts(ctx).find(item => item.kind === 'publication' && !item.released);
     if (previous) return this.finish(ctx, previous.unresolved ? 'needs-attention' : 'failed', 'publication-failed');
     if (this.config.mode !== 'live' || !this.deps.publisher) return this.defer(ctx, 'publisher-unavailable');
     this.guard(ctx); let message: string;
     try {
-      message = this.deps.publisher.prepare({ job: structuredClone(ctx.job), analysis: structuredClone(analysis), bundle: artifacts.bundle!, snapshot: artifacts.snapshot! });
+      const common = { job: structuredClone(ctx.job), snapshot: artifacts.snapshot! };
+      if (artifacts.analysisProfile === 'gemini' && isGeminiAttempt(analysis)) message = this.deps.publisher.prepare({ ...common, analysisProfile: 'gemini', analysis: structuredClone(analysis), bundle: artifacts.bundle! });
+      else if (artifacts.analysisProfile === 'legacy' && !isGeminiAttempt(analysis)) message = this.deps.publisher.prepare({ ...common, analysis: structuredClone(analysis), bundle: artifacts.bundle! });
+      else throw new PipelineError('invalid-input');
       ensure(typeof message === 'string' && object(JSON.parse(message)));
       ensure(Buffer.byteLength(JSON.stringify({ version: 1, guildId: ctx.job.settings.guildId, channelId: ctx.job.settings.channelId,
         analysisAttemptId: ctx.job.resultAttemptId, message }), 'utf8') <= 32 * 1024 * 1024);
@@ -349,8 +498,9 @@ class Pipeline implements MatchPipeline {
     fields(input, ['jobId']); ensure(id(input.jobId)); let job: Job;
     try { job = this.deps.storage.getJob(input.jobId); }
     catch (error) { if (error instanceof StorageError && error.code === 'not-found') throw new PipelineError('not-found'); throw this.failStorage(); }
-    const billingUnknown = this.db(() => this.deps.storage.getBillingSummary({ jobId: job.id })).unknownCount > 0;
-    return { job, result: this.db(() => this.deps.storage.getLatestResult(job.matchId, job.side)), attention: job.state === 'needs-attention' || billingUnknown, billingUnknown };
+    const billing = this.db(() => this.deps.storage.getBillingSummary({ jobId: job.id })), billingUnknown = billing.unknownCount > 0;
+    return { job, result: this.db(() => this.deps.storage.getLatestResult(job.matchId, job.side)), attention: job.state === 'needs-attention' || billingUnknown, billingUnknown,
+      knownCostUsd: billing.knownCostUsd, reservedCostUsd: billing.reservedCostUsd, uncoveredUnknownCount: billing.uncoveredUnknownCount };
   }
   private async sleep(ms: number, signal: AbortSignal): Promise<void> {
     const until = Math.min(Number.MAX_SAFE_INTEGER, this.clock.now() + ms);
@@ -365,7 +515,7 @@ class Pipeline implements MatchPipeline {
       fields(options, [], ['automatic', 'signal']); ensure(options.signal === undefined || options.signal instanceof AbortSignal);
       this.check(options.signal); if (this.running) return { status: 'already-running' };
       ensure(options.automatic === undefined || typeof options.automatic === 'boolean');
-      const automatic = options.automatic ?? true; if (automatic) this.cutoff();
+      const automatic = options.automatic ?? true; if (automatic) { this.cutoff(); if (this.config.historySource === 'steam') ensure(this.deps.steam, 'invalid-config'); }
       this.running = true; const signal = this.signal(options.signal);
       const worker = async () => { while (!signal.aborted) { const result = await this.processNext({ signal }); if (result.status !== 'processed') await this.sleep(this.config.workerIdleMs, signal); } };
       const discovery = async () => { while (!signal.aborted) { await this.discoverOnce({ signal }); await this.sleep(this.config.pollIntervalMs, signal); } };

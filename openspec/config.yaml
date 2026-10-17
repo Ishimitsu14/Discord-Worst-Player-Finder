@@ -9,12 +9,17 @@ context: |
   Stack: TypeScript, Node.js, discord.js, SQLite; one service deployed on a VPS.
   Configure a simple list of the group's Steam32 account IDs, without person or Discord mappings.
   Analyze ranked matches automatically when at least two listed accounts share a team,
-  and manually by match ID. Select the worst one or two of all five allies, on wins and losses.
-  Use OpenDota for match data and OpenRouter xiaomi/mimo-v2.6-pro for analysis.
-  Publish Russian Discord embeds with a harsh roast supported by match facts.
+  and manually by match ID. Keep Steam32-based team selection on wins and losses.
+  The new target profile selects exactly one worst ally using the supplied Gemini rules,
+  compact match facts and OpenRouter google/gemini-3.8-flash. Chat is for roast only.
+  Return a Russian nomination, 3-4 game-based reasons and a punchline with an attributed own quote when available.
+  This is a humorous bot: hyperbole and loose gameplay interpretations are accepted; constant causal caveats are not required.
+  Keep source numbers, quote attribution and technical schema checks. Do not reject style solely for unproven humorous causality.
+  Legacy MiMo packages and runtime remain unchanged until explicit compatible integration.
+  Use OpenDota for match data and publish Russian Discord embeds.
   Keep OpenDota transport, match discovery, derived facts, LLM analysis, Discord,
   persistence, evaluation experiments, and operations as separate logical modules.
-  Calibrate evaluation criteria on real matches before fixing the model instruction.
+  The user adopted the supplied Gemini heuristics; verify their quality with real-match experiments before declaring calibration complete.
   Development takes place on Windows/PowerShell; runtime must also support Linux.
 
 rules:

@@ -10,7 +10,7 @@ import { analyzeStored } from './storage-example.js';
 
 test('storage: точные артефакты переживают reopen и настоящий аналитик отправляет исходное body', async t => {
   const f = await fixture(t), store = f.open(), current = setup(store), original = inputs();
-  assert.deepEqual(store.getJobArtifacts(current.job.id), original); store.close();
+  assert.deepEqual(store.getJobArtifacts(current.job.id, 'legacy'), { analysisProfile: 'legacy', ...original }); store.close();
   const reopened = f.open(), claim = reopened.renewClaim(current.claim); let posts = 0;
   const { attemptId, attempt } = await analyze(reopened, claim, { onPost: body => {
     posts++; assert.equal(body, original.prepared.body);
@@ -19,7 +19,7 @@ test('storage: точные артефакты переживают reopen и н
   } });
   assert.equal(posts, 1); assert.equal(attempt.status, 'valid'); reopened.saveAnalysisOutcome(attemptId, attempt);
   const accepted = reopened.checkpoint(claim, { step: 'publish', resultAttemptId: attemptId }); reopened.finish(accepted.claim, { state: 'succeeded' });
-  assert.equal(reopened.getLatestResult(101, 'radiant')!.attempt.identity!.calibration, 'experimental');
+  assert.equal(reopened.getLatestResult(101, 'radiant', 'legacy')!.attempt.identity!.calibration, 'experimental');
 });
 
 test('storage: ограничения, ссылки и повреждение артефакта не раскрывают данные', async t => {
@@ -38,7 +38,7 @@ test('storage: ограничения, ссылки и повреждение а
   const saved = store.saveInputs(claim, original);
   assert.throws(() => store.saveInputs(saved.claim, { snapshot: { ...original.snapshot, retrievedAt: 1001 } }), errorIs('conflict'));
   const db = new DatabaseSync(f.path); db.prepare("UPDATE artifacts SET body='private-sentinel' WHERE kind='bundle'").run(); db.close();
-  assert.throws(() => store.getJobArtifacts(job.id), error => { assert.ok(errorIs('integrity-error')(error)); assert.ok(!JSON.stringify(error).includes('private-sentinel')); return true; });
+  assert.throws(() => store.getJobArtifacts(job.id, 'legacy'), error => { assert.ok(errorIs('integrity-error')(error)); assert.ok(!JSON.stringify(error).includes('private-sentinel')); return true; });
 });
 
 test('storage: rollback не оставляет частичные артефакты и ссылки', async t => {
@@ -89,11 +89,11 @@ test('storage: сбой COMMIT перед отправкой даёт ноль �
   const result = await analyze(store, current.claim, { onPost: () => posts++, beforeSend: async value => { armed = true; store.startAnalysis(current.claim, value.attemptId, value); } });
   fault.mock.restore(); assert.equal(posts, 0); assert.equal(result.attempt.requestSent, false);
   assert.equal(store.listAttempts(current.job.id)[0].state, 'prepared'); store.saveAnalysisOutcome(result.attemptId, result.attempt);
-  assert.deepEqual(store.getBillingSummary(), { knownCostUsd: 0, unknownCount: 0, unfinishedEstimatedCostUsd: 0 });
+  assert.deepEqual(store.getBillingSummary(), { knownCostUsd: 0, unknownCount: 0, unfinishedEstimatedCostUsd: 0, reservedCostUsd: 0, uncoveredUnknownCount: 0 });
 });
 
 test('storage: отказ повторному beforeSend не отменяет ранее допущенный запрос', async t => {
-  const f = await fixture(t), store = f.open(), current = setup(store), start = started(store, current.claim), artifacts = store.getJobArtifacts(current.job.id); let posts = 0;
+  const f = await fixture(t), store = f.open(), current = setup(store), start = started(store, current.claim), artifacts = store.getJobArtifacts(current.job.id, 'legacy'); let posts = 0;
   assert.throws(() => store.startAnalysis(current.claim, start.attemptId, start), errorIs('attempt-already-started'));
   assert.throws(() => store.reserveAnalysis(current.claim, { attemptId: randomUUID(), preparedRef: current.refs.prepared! }), errorIs('conflict'));
   const rejected = await analyzeMatch(artifacts.prepared!, artifacts.bundle!, { attemptId: start.attemptId, maxEstimatedCostUsd: 1 }, {
@@ -114,19 +114,19 @@ test('storage: final валидируется, повторяется идемп
   ]) assert.throws(() => store.saveAnalysisOutcome(result.attemptId, changed));
   const saved = store.saveAnalysisOutcome(result.attemptId, result.attempt);
   assert.deepEqual(store.saveAnalysisOutcome(result.attemptId, structuredClone(result.attempt)), saved);
-  assert.equal(store.getLatestResult(101, 'radiant'), null);
+  assert.equal(store.getLatestResult(101, 'radiant', 'legacy'), null);
   assert.throws(() => store.saveAnalysisOutcome(result.attemptId, { ...result.attempt, generationId: 'different' }), errorIs('conflict'));
   assert.throws(() => store.reserveAnalysis(current.claim, { attemptId: randomUUID(), preparedRef: current.refs.prepared! }), errorIs('conflict'));
-  store.checkpoint(current.claim, { step: 'publish', resultAttemptId: result.attemptId }); assert.equal(store.getLatestResult(101, 'radiant')!.attempt.status, 'valid');
+  store.checkpoint(current.claim, { step: 'publish', resultAttemptId: result.attemptId }); assert.equal(store.getLatestResult(101, 'radiant', 'legacy')!.attempt.status, 'valid');
 });
 
 test('storage: preflight с null сохраняется без выдуманной идентичности и оплаты', async t => {
-  const f = await fixture(t), store = f.open(), current = setup(store), attemptId = randomUUID(), values = store.getJobArtifacts(current.job.id);
+  const f = await fixture(t), store = f.open(), current = setup(store), attemptId = randomUUID(), values = store.getJobArtifacts(current.job.id, 'legacy');
   store.reserveAnalysis(current.claim, { attemptId, preparedRef: current.refs.prepared! });
   const attempt = await analyzeMatch(values.prepared!, values.bundle!, { attemptId, maxEstimatedCostUsd: 1 }, { apiKey: '', beforeSend: async () => { throw Error('unexpected callback'); } });
   assert.equal(attempt.identity, null); assert.equal(attempt.attemptId, null);
   assert.equal((store.saveAnalysisOutcome(attemptId, attempt).outcome as AnalysisAttempt).version, 1);
-  assert.equal(store.getBillingSummary().unknownCount, 0); assert.equal(store.getLatestResult(101, 'radiant'), null);
+  assert.equal(store.getBillingSummary().unknownCount, 0); assert.equal(store.getLatestResult(101, 'radiant', 'legacy'), null);
 });
 
 test('storage: recover трогает просроченные задачи, prepared без POST не становится расходом', async t => {
@@ -146,11 +146,11 @@ test('storage: recover трогает просроченные задачи, pre
 test('storage: поздний ответ сохраняется после lease, новый владелец принимает его явно', async t => {
   const f = await fixture(t), store = f.open(), current = setup(store), result = await analyze(store, current.claim); f.advance(); store.recoverInterrupted();
   const attention = store.getJob(current.job.id); store.saveAnalysisOutcome(result.attemptId, result.attempt);
-  assert.equal(store.getJob(current.job.id).version, attention.version); assert.equal(store.getLatestResult(101, 'radiant'), null);
+  assert.equal(store.getJob(current.job.id).version, attention.version); assert.equal(store.getLatestResult(101, 'radiant', 'legacy'), null);
   assert.throws(() => store.checkpoint(current.claim, { step: 'publish', resultAttemptId: result.attemptId }), errorIs('lease-lost'));
   store.resolveUncertain({ resolutionId: 'accept', jobId: current.job.id, expectedVersion: attention.version, attemptId: result.attemptId,
     decision: 'accept-outcome', state: 'waiting', reason: 'late saved response', evidenceRef: 'test:response' });
-  store.checkpoint(store.claimNext()!.claim, { step: 'publish', resultAttemptId: result.attemptId }); assert.ok(store.getLatestResult(101, 'radiant'));
+  store.checkpoint(store.claimNext()!.claim, { step: 'publish', resultAttemptId: result.attemptId }); assert.ok(store.getLatestResult(101, 'radiant', 'legacy'));
 });
 
 test('storage: явное принятие not-sent сохраняет аудит и не меняет StartedAttempt', async t => {
@@ -170,7 +170,7 @@ test('storage: журнал считает invalid-output, unknown и unfinished
   const two = started(store, current.claim); store.saveAnalysisOutcome(two.attemptId, invalidAttempt(two, 0.01));
   const three = started(store, current.claim); store.saveAnalysisOutcome(three.attemptId, invalidAttempt(three, null));
   const four = started(store, current.claim);
-  assert.deepEqual(store.getBillingSummary(), { knownCostUsd: 0.01, unknownCount: 2, unfinishedEstimatedCostUsd: four.estimatedCostUsd });
+  assert.deepEqual(store.getBillingSummary(), { knownCostUsd: 0.01, unknownCount: 2, unfinishedEstimatedCostUsd: four.estimatedCostUsd, reservedCostUsd: 0, uncoveredUnknownCount: 2 });
   assert.deepEqual(store.getBillingSummary({ jobId: current.job.id }), store.getBillingSummary());
   f.advance(); store.recoverInterrupted(); const attention = store.getJob(current.job.id);
   store.resolveUncertain({ resolutionId: 'explicit-repeat', jobId: current.job.id, expectedVersion: attention.version, attemptId: four.attemptId,
@@ -193,7 +193,7 @@ test('storage: публикация сохраняет точную цель, pa
   assert.deepEqual(store.savePublicationOutcome(publication.attemptId, { messageId: '18446744073709551615' }), saved);
   assert.throws(() => store.savePublicationOutcome(publication.attemptId, { messageId: '1' }), errorIs('conflict'));
   assert.throws(() => store.beginPublication(accepted.claim, { ...publication, attemptId: 'publication-2' }), errorIs('conflict'));
-  store.close(); const reopened = f.open(); assert.deepEqual(reopened.getLatestResult(101, 'radiant')!.publications[0].outcome, { messageId: '18446744073709551615' });
+  store.close(); const reopened = f.open(); assert.deepEqual(reopened.getLatestResult(101, 'radiant', 'legacy')!.publications[0].outcome, { messageId: '18446744073709551615' });
 });
 
 test('storage: unknown публикация после reopen не даёт автоматического дубля', async t => {
@@ -216,7 +216,7 @@ test('storage: insufficient-evidence допустим, неудачная рев
   const claim = store.claimNext()!.claim, saved = store.saveInputs(claim, inputs());
   const second = started(store, saved.claim); store.saveAnalysisOutcome(second.attemptId, invalidAttempt(second)); store.finish(saved.claim, { state: 'failed', reason: 'invalid output' });
   assert.equal(store.getLatestJob(101, 'radiant')!.revision, 2);
-  const last = store.getLatestResult(101, 'radiant')!; assert.equal(last.job.revision, 1); assert.equal(last.attempt.analysis!.status, 'insufficient-evidence');
+  const last = store.getLatestResult(101, 'radiant', 'legacy')!; assert.equal(last.job.revision, 1); assert.equal(last.attempt.analysis!.status, 'insufficient-evidence');
 });
 
 test('storage: пример API компилируется и выполняется без настоящей сети', async t => {
@@ -224,7 +224,7 @@ test('storage: пример API компилируется и выполняет
   const result = await analyzeStored(store, current.claim, 1, { apiKey: 'synthetic-storage-key', fetcher: async (_url, init) => {
     if (init?.method !== 'POST') return Response.json(metadata()); posts++; return Response.json(payload(inputs().bundle));
   } });
-  assert.equal(result.attempt.status, 'valid'); assert.equal(posts, 1); assert.ok(store.getLatestResult(101, 'radiant'));
+  assert.equal(result.attempt.status, 'valid'); assert.equal(posts, 1); assert.ok(store.getLatestResult(101, 'radiant', 'legacy'));
 });
 
 test('storage: sent-исход без допуска и попытка другого job не принимаются', async t => {
@@ -259,6 +259,6 @@ test('storage: поздняя публикация после явного ра�
   const next = store.claimNext()!; store.beginPublication(next.claim, { attemptId: 'publication-new', analysisAttemptId: result.attemptId, message: '{}' });
   store.savePublicationOutcome('publication-old', { messageId: '1' }); store.savePublicationOutcome('publication-new', { messageId: '2' });
   assert.equal(store.getJob(current.job.id).version, next.job.version);
-  const publications = store.getLatestResult(101, 'radiant')!.publications;
+  const publications = store.getLatestResult(101, 'radiant', 'legacy')!.publications;
   assert.equal(publications.length, 2); assert.ok(publications.some(item => item.released && 'messageId' in item.outcome! && item.outcome.messageId === '1'));
 });

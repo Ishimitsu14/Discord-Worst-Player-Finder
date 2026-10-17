@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "source": "https://github.com/odota/dotaconstants/blob/master/build/permanent_buffs.json",
+  "revision": "snapshot-2026-10-17",
+  "heroes": {
+    "14": { "buff": 4, "metric": "flesh_heap" },
+    "26": { "buff": 7, "metric": "finger_stacks" },
+    "104": { "buff": 5, "metric": "duel_damage" }
+  }
+}

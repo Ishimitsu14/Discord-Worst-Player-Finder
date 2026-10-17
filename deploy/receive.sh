@@ -15,7 +15,7 @@ printf '%s  %s\n' "$digest" "$upload" | sha256sum --check --status
 tar -tzf "$upload" | awk '
   { name=$0; sub(/^\.\//,"",name); if(name=="")next;
     if(name !~ /^[a-zA-Z0-9_./-]+$/ || name ~ /(^|\/)\.\.(\/|$)/ || name ~ /^\//)exit 1;
-    if(name !~ /^(dist(\/src(\/.*)?)?\/?|analysis(\/prompts(\/.*)?)?\/?|evaluation(\/dictionaries(\/dotaconstants-v1.json)?)?\/?|config\/?|config\/(service|group-settings).example.json|deploy\/?|deploy\/(control.sh|receive.sh|worst-player.service|README.md)|package.json|package-lock.json|REVISION)$/)exit 1;
+    if(name !~ /^(dist(\/src(\/.*)?)?\/?|analysis(\/prompts(\/.*)?)?\/?|evaluation(\/dictionaries(\/(dotaconstants-v1|hero-metrics-v1).json)?)?\/?|config\/?|config\/(service|group-settings).example.json|deploy\/?|deploy\/(control.sh|receive.sh|worst-player.service|README.md)|package.json|package-lock.json|REVISION)$/)exit 1;
   }'
 tar -tvzf "$upload" | awk 'substr($0,1,1)!="-" && substr($0,1,1)!="d" {exit 1}'
 release="$base/releases/$sha"

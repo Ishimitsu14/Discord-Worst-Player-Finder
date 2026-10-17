@@ -11,7 +11,8 @@ export interface Event { index: number; fields: Fields }
 export interface Role { position: Observation; source: 'opendota-estimate' | 'manual' | 'unknown' }
 export interface RoleOverride { playerSlot: number; position: number }
 export interface MatchFactsInput { matchId: number; side: Side; data: unknown }
-export interface FactsOptions { dictionary: unknown; roleOverrides?: RoleOverride[] }
+export interface FactsOptions { dictionary: unknown; roleOverrides?: RoleOverride[]; briefFormat?: 'match-brief-v1' }
+export interface FactsOptionsV2 extends Omit<FactsOptions, 'briefFormat'> { briefFormat: 'match-brief-v2' }
 export interface Dictionary {
   version: 1; source: string; revision: string;
   heroes: Record<string, string>; items: Record<string, string>; abilities: Record<string, string>;
@@ -80,6 +81,27 @@ export interface Manifest {
   factsDigest: string; contextDigest: string; evidenceDigest: string; bundleId: string;
 }
 export interface FactsBundle { facts: Facts; context: Brief; evidence: Evidence[]; manifest: Manifest }
+export type Unavailable = Extract<Observation, { unavailable: string }>;
+export type DeathTotals = Record<Side | 'allies' | 'opponents', number | Unavailable>;
+export interface FightDeathSummary {
+  index: number; totals: Fact<DeathTotals>; unavailableSlots: number[]; headerStatus: 'match' | 'mismatch' | 'unknown';
+}
+export interface BuildingCounts {
+  byPlayerSlot: Record<string, number>; unassigned: number; knownBuildingEvents: number;
+  otherEvents: number; unclassifiedEvents: number; excludedByTime: number;
+}
+export interface MetricOrder { groups: { value: number; slots: number[] }[]; unavailableSlots: number[]; complete: boolean }
+export interface Summaries {
+  fightDeaths: {
+    byFight: FightDeathSummary[];
+    allCards: { sourceState: State; cardCount: Observation; totals: Observation<DeathTotals>; conflictingCards: number[] };
+  };
+  buildingKillEvents: { sourceState: State; counts: Observation<BuildingCounts> };
+  allyMetricOrder: Record<string, Fact<MetricOrder>>;
+}
+export interface BriefV2 extends Omit<Brief, 'version' | 'format'> { version: 2; format: 'match-brief-v2'; summaries: Summaries }
+export interface ManifestV2 extends Omit<Manifest, 'briefFormat'> { briefFormat: 'match-brief-v2' }
+export interface FactsBundleV2 extends Omit<FactsBundle, 'context' | 'manifest'> { context: BriefV2; manifest: ManifestV2 }
 export type ErrorCode = 'invalid-input' | 'unusable-match' | 'invalid-dictionary' | 'invalid-role-override' | 'context-too-large' | 'integrity-error' | 'unknown-fact-reference';
 export class FactsError extends Error {
   constructor(public code: ErrorCode, public details: Record<string, number> = {}) { super(code); }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { validateMatchAnalysis } from '../match-analysis/index.js';
+import { validateMatchAnalysis, presentGeminiAnalysis } from '../match-analysis/index.js';
 import { DiscordInterfaceError, type APIEmbed, type PublicationContext } from './types.js';
 import { allowedMentions, ensure, id, integer, keys, object } from './values.js';
 
@@ -44,6 +44,7 @@ export const publicationNonce = (attemptId: string): string => createHash('sha25
 
 export function renderAnalysis(input: PublicationContext): APIEmbed {
   try {
+    if (input.analysisProfile === 'gemini') return renderGemini(input);
     const { job, analysis: attempt, bundle, snapshot } = input;
     ensure(attempt.status === 'valid' && id(attempt.attemptId) && job.resultAttemptId === attempt.attemptId && integer(job.matchId, 1) && integer(job.revision, 1), 'invalid-result', 'render');
     ensure(attempt.identity?.matchId === job.matchId && attempt.identity.side === job.side && attempt.identity.bundleId === bundle.manifest.bundleId
@@ -77,6 +78,33 @@ export function renderAnalysis(input: PublicationContext): APIEmbed {
     };
     validateEmbed(embed); return embed;
   } catch (error) { if (error instanceof DiscordInterfaceError) throw error; throw new DiscordInterfaceError('invalid-result', 'render'); }
+}
+
+function renderGemini(input: Extract<PublicationContext, { analysisProfile: 'gemini' }>): APIEmbed {
+  const { job, analysis: attempt, bundle, snapshot } = input;
+  ensure(attempt.status === 'valid' && id(attempt.attemptId) && job.resultAttemptId === attempt.attemptId && integer(job.matchId, 1) && integer(job.revision, 1), 'invalid-result', 'render');
+  const result = presentGeminiAnalysis(attempt.analysis, bundle), info = bundle.context.match_info.value;
+  ensure(attempt.identity?.matchId === job.matchId && attempt.identity.side === job.side && attempt.identity.bundleId === bundle.manifest.bundleId
+    && attempt.identity.responseFormat === attempt.analysis!.format && result.matchId === job.matchId && result.side === job.side
+    && snapshot.data.match_id === job.matchId && info.duration_sec === snapshot.data.duration
+    && typeof snapshot.data.radiant_win === 'boolean' && result.won === (snapshot.data.radiant_win === (job.side === 'radiant'))
+    && integer(snapshot.data.duration, 1), 'invalid-result', 'render');
+  let shortened = false;
+  const text = (value: string, limit: number): string => { const cleaned = cleanText(value), bounded = shorten(cleaned, limit); shortened ||= cleaned !== bounded; ensure(bounded.trim(), 'invalid-result', 'render'); return bounded; };
+  const duration = `${Math.floor(snapshot.data.duration / 60)}:${String(snapshot.data.duration % 60).padStart(2, '0')}`;
+  const fields = result.facts.map((fact, index) => ({ name: `Основание ${index + 1}`, value: text(fact.claim, 400) }));
+  if (result.quote) {
+    const time = result.quote.time_sec, stamp = `${time < 0 ? '−' : ''}${Math.floor(Math.abs(time) / 60)}:${String(Math.abs(time) % 60).padStart(2, '0')}`;
+    fields.push({ name: `Его чат • ${stamp}${result.quote.truncated ? ' • цитата сокращена' : ''}`, value: text(result.quote.text, 500) });
+  }
+  fields.push({ name: 'Вердикт', value: text(result.verdict, 800) });
+  if (result.limitations.length) fields.push({ name: 'Ограничения', value: text(result.limitations.join(' • '), 400) });
+  result.teamFacts?.forEach((fact, index) => fields.push({ name: `${result.won ? 'Слабые места команды' : 'Почему проебали'} • ${index + 1}/3`, value: text(fact.claim, 400) }));
+  const embed: APIEmbed = { title: `Разбор #${job.matchId} — ${job.side === 'radiant' ? 'Radiant' : 'Dire'}: ${result.won ? 'победа' : 'поражение'}`,
+    url: `https://www.opendota.com/matches/${job.matchId}`, color: 0x5865f2,
+    description: `${text(result.playerName, 80)} — ${text(result.heroName ?? `Слот ${result.playerSlot}`, 50)} • ${duration} • ${text(result.nomination, 200)}`,
+    fields, footer: { text: `Версия ${job.revision} • уверенность ${{ low: 'низкая', medium: 'средняя', high: 'высокая' }[result.confidence]} • экспериментально${shortened ? ' • текст сокращён' : ''}` } };
+  validateEmbed(embed); return embed;
 }
 
 export function publicationMessage(input: PublicationContext): string {

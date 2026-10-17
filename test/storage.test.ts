@@ -35,7 +35,7 @@ test('storage: создание, настройки SQLite, повторное �
   assert.deepEqual(f.open().getJob(job.id), job);
   const db = new DatabaseSync(f.path);
   assert.equal(db.prepare('PRAGMA application_id').get()!.application_id, 0x44575046);
-  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 1);
+  assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 3);
   assert.equal(db.prepare('PRAGMA journal_mode').get()!.journal_mode, 'delete');
   assert.equal(db.prepare('PRAGMA quick_check').get()!.quick_check, 'ok');
   db.close();
@@ -64,7 +64,7 @@ test('storage: чужая, повреждённая, более новая БД 
   let db = new DatabaseSync(f.path); db.exec('CREATE TABLE foreign_data(value); INSERT INTO foreign_data VALUES(42)'); db.close();
   assert.throws(() => f.open(), errorIs('incompatible-schema'));
   db = new DatabaseSync(f.path); assert.equal(db.prepare('SELECT value FROM foreign_data').get()!.value, 42); db.close(); await unlink(f.path);
-  f.open().close(); db = new DatabaseSync(f.path); db.exec('PRAGMA user_version=2'); db.close();
+  f.open().close(); db = new DatabaseSync(f.path); db.exec('PRAGMA user_version=4'); db.close();
   assert.throws(() => f.open(), errorIs('incompatible-schema'));
   db = new DatabaseSync(f.path); db.exec("PRAGMA user_version=1; UPDATE migrations SET checksum='invalid'"); db.close();
   assert.throws(() => f.open(), errorIs('incompatible-schema'));

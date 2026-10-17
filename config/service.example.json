@@ -5,6 +5,9 @@
   "dataDir": "data",
   "automatic": false,
   "pipeline": {
+    "analysisProfile": "gemini",
+    "historySource": "steam",
+    "pollIntervalMs": 60000,
     "mode": "prepare-only",
     "allowExperimental": false
   }

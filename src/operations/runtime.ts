@@ -2,10 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Client, GatewayIntentBits, Events } from 'discord.js';
 import { OpenDotaClient, type Clock } from '../opendota/index.js';
+import { SteamHistoryClient } from '../steam/index.js';
 import { openStorage, type Storage } from '../storage/index.js';
 import { createMatchPipeline, type MatchPipeline, type Publisher } from '../match-pipeline/index.js';
 import { createDiscordInterface, createDiscordPublisher, type DiscordInterface } from '../discord-interface/index.js';
-import { ensure, integer, json, keys } from './config.js';
+import { ensure, integer, json, keys, validateMaterials } from './config.js';
 import { activateService, atomicJson, dataPaths, readState } from './state.js';
 import { OperationsError, type Service, type ServiceDependencies, type ServiceEvent, type ServiceInput, type ServiceStatus } from './types.js';
 
@@ -27,7 +28,9 @@ export async function readRevision(root: string): Promise<string> {
 export async function readStatus(input: Pick<ServiceInput, 'config'>, now = Date.now()): Promise<ServiceStatus> {
   try {
     const value = await json(dataPaths(input.config).health, 16384) as ServiceStatus;
-    keys(value, ['version', 'revision', 'timestamp', 'pid', 'phase', 'discordReady', 'mode', 'automatic', 'knownCostUsd', 'unknownCount']);
+    keys(value, ['version', 'revision', 'timestamp', 'pid', 'phase', 'discordReady', 'mode', 'automatic', 'knownCostUsd', 'unknownCount'], ['reservedCostUsd', 'uncoveredUnknownCount']);
+    ensure(value.reservedCostUsd === undefined || Number.isFinite(value.reservedCostUsd) && value.reservedCostUsd >= 0, 'not-ready');
+    ensure(value.uncoveredUnknownCount === undefined || integer(value.uncoveredUnknownCount), 'not-ready');
     ensure(value.version === 1 && value.phase === 'ready' && value.discordReady === true && Number.isSafeInteger(value.timestamp)
       && value.timestamp <= now && now - value.timestamp <= 45000 && /^(?:[a-f0-9]{40}|development)$/.test(value.revision)
       && integer(value.pid, 1) && ['prepare-only', 'live'].includes(value.mode) && typeof value.automatic === 'boolean'
@@ -38,7 +41,10 @@ export async function readStatus(input: Pick<ServiceInput, 'config'>, now = Date
 }
 export async function startService(input: ServiceInput, deps: ServiceDependencies = {}): Promise<Service> {
   const { config, secrets } = input, clock = deps.clock ?? nativeClock;
+  validateMaterials(input);
   ensure(typeof secrets.discordToken === 'string' && secrets.discordToken.trim(), 'missing-secret');
+  ensure(config.pipeline.mode !== 'live' || typeof secrets.openRouterKey === 'string' && secrets.openRouterKey.trim(), 'missing-secret');
+  ensure(!config.automatic || config.pipeline.historySource !== 'steam' || typeof secrets.steamKey === 'string' && secrets.steamKey.trim(), 'missing-secret');
   await readState(config, clock.now());
   const revision = await readRevision(input.releaseRoot), paths = dataPaths(config), pending = new Set<Promise<unknown>>();
   const client = deps.client ?? new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -48,9 +54,9 @@ export async function startService(input: ServiceInput, deps: ServiceDependencie
   const done = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; }); void done.catch(() => {});
   const event = (value: ServiceEvent) => { try { void Promise.resolve(deps.onEvent?.(Object.freeze(value))).catch(() => {}); } catch {} };
   const health = async (phase: ServiceStatus['phase']) => {
-    const billing = storage?.getBillingSummary() ?? { knownCostUsd: 0, unknownCount: 0 };
+    const billing = storage?.getBillingSummary() ?? { knownCostUsd: 0, unknownCount: 0, reservedCostUsd: 0, uncoveredUnknownCount: 0 };
     await atomicJson(paths.health, { version: 1, revision, timestamp: clock.now(), pid: process.pid, phase, discordReady: client.isReady(), mode: config.pipeline.mode ?? 'prepare-only',
-      automatic: config.automatic, knownCostUsd: billing.knownCostUsd, unknownCount: billing.unknownCount } satisfies ServiceStatus);
+      automatic: config.automatic, knownCostUsd: billing.knownCostUsd, unknownCount: billing.unknownCount, reservedCostUsd: billing.reservedCostUsd, uncoveredUnknownCount: billing.uncoveredUnknownCount } satisfies ServiceStatus);
   };
   const shutdown = (): Promise<void> => {
     if (stopping) return stopping;
@@ -89,9 +95,15 @@ export async function startService(input: ServiceInput, deps: ServiceDependencie
       void work.finally(() => pending.delete(work)).catch(() => {}); return work;
     } };
     const opendota = new OpenDotaClient({ apiKey: secrets.openDotaKey }, { fetcher: deps.fetcher, clock });
+    const steam = config.pipeline.historySource === 'steam' && secrets.steamKey ? new SteamHistoryClient({ apiKey: secrets.steamKey }, { fetcher: deps.fetcher, clock }) : undefined;
     pipeline = createMatchPipeline({ ...config.pipeline, ...(state.automaticSince === null ? {} : { automaticSince: state.automaticSince }) }, {
-      settings: input.settings, storage, opendota, facts: { dictionary: input.dictionary }, prompt: input.prompt, apiKey: secrets.openRouterKey,
-      fetcher: deps.fetcher, publisher, clock, onEvent: value => { if (value.code === 'storage-failure') onError(); event({ component: 'pipeline', code: value.code ?? value.type, ...(value.jobId ? { jobId: value.jobId } : {}) }); },
+      settings: input.settings, storage, opendota, steam, facts: { dictionary: input.dictionary }, prompt: input.prompt, apiKey: secrets.openRouterKey,
+      geminiPrompt: input.geminiPrompt, heroMetricsDictionary: input.heroMetricsDictionary, managementKey: secrets.openRouterManagementKey,
+      fetcher: deps.fetcher, publisher, clock, onEvent: value => {
+        if (value.code === 'storage-failure') onError();
+        const { jobId, accountId, pages, candidates, queued, existing, rejected, requiresSide, errors, partial, pending: waiting, deferred, checks, accountsChecked, knownCostUsd, reservedCostUsd, uncoveredUnknownCount } = value;
+        event({ component: 'pipeline', code: value.code ?? value.type, jobId, accountId, pages, candidates, queued, existing, rejected, requiresSide, errors, partial, pending: waiting, deferred, checks, accountsChecked, knownCostUsd, reservedCostUsd, uncoveredUnknownCount });
+      },
     });
     discord = createDiscordInterface({ settings: input.settings }, { client, pipeline, storage, clock, onEvent: value => {
       if (value.code === 'storage-failure') onError(); event({ component: 'discord', code: value.code, ...(value.jobId ? { jobId: value.jobId } : {}), ...(value.interactionId ? { interactionId: value.interactionId } : {}) });

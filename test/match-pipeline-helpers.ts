@@ -60,7 +60,7 @@ export async function fixture(t: TestContext) {
     const custom = hooks.analysis?.(String(url), init); if (custom !== undefined) return custom;
     return String(url).endsWith('/endpoints') ? Response.json(metadata()) : response(init.body);
   };
-  const publisher: Publisher = { prepare: input => JSON.stringify({ result: input.analysis.analysis!.status }), send: async () => ({ messageId: '18446744073709551613' }) };
+  const publisher: Publisher = { prepare: input => JSON.stringify({ result: input.analysisProfile === 'gemini' ? input.analysis.analysis!.format : input.analysis.analysis!.status }), send: async () => ({ messageId: '18446744073709551613' }) };
   const fx = { root, path, clock, get storage() { return storage; }, matches, history, calls, hooks, opendota, fetcher, publisher,
     pipe(options: PipelineOptions = {}, overrides: Partial<PipelineDependencies> = {}) {
       const pipeline = createMatchPipeline(options, { settings, storage, opendota, facts: { dictionary }, prompt, apiKey: 'sk-synthetic-pipeline-secret', fetcher, clock, ...overrides });

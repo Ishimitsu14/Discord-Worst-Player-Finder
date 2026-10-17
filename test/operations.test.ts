@@ -14,6 +14,9 @@ import { activateService, dataPaths, readState } from '../src/operations/state.j
 import { openStorage } from '../src/storage/index.js';
 import { accepted, settings, data, live } from './discord-interface-helpers.js';
 import { deferred, flush, TestClock } from './opendota-helpers.js';
+import { drive } from './match-pipeline-helpers.js';
+import { compactOptions, geminiMetadata, geminiAnswerV2, geminiEvents, geminiStreamResponse, runtimeData, emptyAnalytics } from './gemini-runtime-helpers.js';
+import { prepareCompactMatchFacts } from '../src/match-facts/index.js';
 
 async function fixture(t: TestContext, changes: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'operations-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -32,6 +35,94 @@ function fakeClient() {
   });
   return { client, hooks, ready: () => { ready = true; client.emit(Events.ClientReady, client as Client<true>); }, destroyed: () => destroyed };
 }
+
+test('Gemini operations: load both families, independent management secret and fail bad material before DB/Gateway/network', async t => {
+  const fx = await fixture(t), fake = fakeClient(); let logins = 0, requests = 0;
+  fake.hooks.login = async () => { logins++; return 'synthetic'; };
+  assert.equal(fx.input.geminiPrompt.profile.responseFormat, 'gemini-match-analysis-v2'); assert.ok(fx.input.heroMetricsDictionary);
+  assert.equal(fx.input.config.pipeline.analysisProfile, undefined);
+  await assert.rejects(loadService(fx.path, { openRouterKey: 'same-synthetic', openRouterManagementKey: 'same-synthetic' }), errorIs('invalid-config'));
+  assert.equal((await loadService(fx.path, { openRouterManagementKey: 'synthetic-management' })).secrets.openRouterManagementKey, 'synthetic-management');
+  for (const edit of [
+    (input: ServiceInput) => { input.heroMetricsDictionary = {}; }, (input: ServiceInput) => { input.dictionary = {}; },
+    (input: ServiceInput) => { input.geminiPrompt.digest = 'bad'; }, (input: ServiceInput) => { input.prompt.digest = 'bad'; },
+  ]) {
+    const input = structuredClone(fx.input); edit(input);
+    await assert.rejects(startService(input, { client: fake.client, fetcher: async () => { requests++; throw Error('unexpected'); } }), errorIs('invalid-config'));
+  }
+  assert.equal(logins + requests, 0); await assert.rejects(access(dataPaths(fx.input.config).db)); await fake.client.destroy();
+});
+
+test('Gemini runtime service: separate transport keys, recovery budget events, preserved activation and old/new health', async t => {
+  const fx = await fixture(t), clock = new TestClock(); await initService(fx.input.config);
+  const originalCutoff = clock.now() - 600000; await activateService({ ...fx.input.config, automatic: true }, originalCutoff);
+  const input: ServiceInput = { ...fx.input, config: { ...fx.input.config, pipeline: { mode: 'live', analysisProfile: 'gemini', allowExperimental: true, maxTotalCostUsd: 1, maxEstimatedCostPerAttemptUsd: 1 } },
+    secrets: { ...fx.input.secrets, openRouterManagementKey: 'synthetic-management-secret' } };
+  const db = openStorage({ path: dataPaths(input.config).db, clock: { now: clock.now } });
+  const job = db.enqueueInitial({ matchId: 101, side: 'dire', origin: 'manual', settings: input.settings, analysisProfile: 'gemini' }); db.close();
+  const raw = runtimeData(), bundle = prepareCompactMatchFacts({ matchId: 101, side: 'dire', data: raw }, compactOptions), events: unknown[] = [], finished = deferred<void>(); let posts = 0, checks = 0;
+  const fake = fakeClient(), service = await startService(input, { client: fake.client, clock, onEvent: value => { events.push(value); if (value.jobId === job.id) finished.resolve(); },
+    publisher: { prepare: () => '{}', send: async () => ({ messageId: '18446744073709551613' }) }, fetcher: async (target, init = {}) => {
+      const url = String(target), key = new Headers(init.headers).get('Authorization');
+      if (url.includes('/api/matches/101')) return Response.json(raw);
+      if (url.endsWith('/endpoints')) return Response.json(geminiMetadata());
+      if (url.endsWith('/analytics/query')) { checks++; assert.equal(key, 'Bearer synthetic-management-secret'); return emptyAnalytics(); }
+      assert.ok(url.endsWith('/chat/completions')); assert.equal(key, 'Bearer synthetic-openrouter-secret'); if (++posts === 1) throw Error('synthetic disconnect');
+      return geminiStreamResponse(geminiEvents(bundle, { answer: geminiAnswerV2(bundle) }));
+    } });
+  t.after(() => service.stop());
+  const status = await readStatus(input, clock.now()); assert.equal(status.reservedCostUsd, 0); assert.ok(typeof status.uncoveredUnknownCount === 'number');
+  const old = { ...status }; delete old.reservedCostUsd; delete old.uncoveredUnknownCount;
+  await writeFile(dataPaths(input.config).health, JSON.stringify(old)); assert.equal((await readStatus(input, clock.now())).version, 1);
+  await drive(finished.promise, clock); assert.equal(posts, 2); assert.equal(checks, 3);
+  assert.equal((await readState(input.config, clock.now())).automaticSince, originalCutoff);
+  assert.doesNotMatch(JSON.stringify(events), /synthetic|https|Authorization|content|requestDigest/);
+  assert.ok(events.some(value => (value as { reservedCostUsd?: number }).reservedCostUsd! > 0));
+  await service.stop(); await service.done;
+});
+
+test('Steam operations: strict config/example, manual without key and automatic rejects before activation/login/network', async t => {
+  const fx = await fixture(t, { pipeline: { historySource: 'steam' } });
+  assert.equal(fx.input.config.automatic, false); await initService(fx.input.config);
+  const config = { ...fx.input.config, automatic: true }, input = { ...fx.input, config }, fake = fakeClient(); let logins = 0, sends = 0;
+  fake.hooks.login = async () => { logins++; return 'synthetic'; };
+  await assert.rejects(startService(input, { client: fake.client, fetcher: async () => { sends++; throw Error('unexpected'); } }), errorIs('missing-secret'));
+  assert.equal(logins + sends, 0); assert.equal((await readState(config)).automaticSince, null); await fake.client.destroy();
+  await writeFile(fx.path, JSON.stringify({ ...fx.raw, automatic: true })); await assert.rejects(loadService(fx.path), errorIs('missing-secret'));
+  assert.equal((await loadService(fx.path, { steamKey: 'synthetic-steam-secret' })).secrets.steamKey, 'synthetic-steam-secret');
+  for (const pipeline of [{ historySource: 'stratz' }, { discoveryRetryMs: 59999 }, { discoveryRetryMs: 120000, discoveryTimeoutMs: 60000 }, { maxDiscoveryChecksPerScan: 0 }, { maxDiscoveryChecksPerScan: 1001 }]) {
+    assert.throws(() => validateConfig({ ...fx.raw, pipeline }, fx.root), errorIs('invalid-config'));
+  }
+  const example = validateConfig(JSON.parse(await readFile('config/service.example.json', 'utf8')), fx.root);
+  assert.equal(example.automatic, false); assert.equal(example.pipeline.historySource, 'steam'); assert.equal(example.pipeline.pollIntervalMs, 60000); assert.equal(example.pipeline.mode, 'prepare-only');
+  const manual = fakeClient(), service = await startService(fx.input, { client: manual.client, fetcher: async () => { sends++; throw Error('unexpected'); } });
+  await service.stop(); assert.equal(sends, 0);
+});
+
+test('Steam runtime: independent cooldown, preserved cutoff, safe coverage events and ready does not mean full history', async t => {
+  const fx = await fixture(t); await initService(fx.input.config); const clock = new TestClock(), original = clock.now() - 600000;
+  await activateService({ ...fx.input.config, automatic: true }, original);
+  const input: ServiceInput = { ...fx.input, config: { ...fx.input.config, automatic: true, pipeline: { historySource: 'steam' } }, secrets: { ...fx.input.secrets, steamKey: 'synthetic-steam-secret', openDotaKey: 'synthetic-opendota-secret' } };
+  const events: unknown[] = [], first = deferred<void>(), second = deferred<void>(); let steamSends = 0, dotaSends = 0, scans = 0;
+  const fake = fakeClient(), service = await startService(input, { client: fake.client, clock, onEvent: value => {
+    events.push(value); if (value.component === 'pipeline' && value.code === 'discovery' && value.pending === 1) { if (++scans === 1) first.resolve(); else second.resolve(); }
+  }, fetcher: async url => {
+    const target = new URL(String(url));
+    if (target.hostname === 'api.steampowered.com') {
+      steamSends++;
+      return Response.json({ result: Number(target.searchParams.get('account_id')) === settings.steamAccountIds[1] ? { status: 15 } : {
+        status: 1, num_results: 1, total_results: 1, results_remaining: 0, matches: [{ match_id: 101, start_time: 1799998000 }],
+      } });
+    }
+    assert.equal(target.pathname, '/api/matches/101'); dotaSends++; return new Response(null, { status: 429, headers: { 'Retry-After': '180' } });
+  } });
+  t.after(() => service.stop()); await first.promise; await flush();
+  assert.equal((await readState(input.config, clock.now())).automaticSince, original);
+  assert.equal((await readStatus(input, clock.now())).phase, 'ready'); assert.equal(steamSends, 2); assert.equal(dotaSends, 1);
+  await clock.tick(60000); await second.promise; assert.equal(steamSends, 4); assert.equal(dotaSends, 1);
+  assert.match(JSON.stringify(events), /steam-history-private/); assert.doesNotMatch(JSON.stringify(events), /synthetic|https|api_key|key=/);
+  await service.stop(); await service.done;
+});
 const errorIs = (code: string) => (error: unknown) => error instanceof OperationsError && error.code === code && !JSON.stringify(error).includes('synthetic');
 
 test('operations strict config keeps manual/prepare defaults and rejects malformed or secret fields', () => {

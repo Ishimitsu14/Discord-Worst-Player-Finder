@@ -1,4 +1,4 @@
-import type { Brief, Group, Observation } from './types.js';
+import type { Brief, BriefV2, Group, Observation } from './types.js';
 
 const cell = (value: unknown): string => {
   if (value !== null && typeof value === 'object') {
@@ -10,7 +10,7 @@ const cell = (value: unknown): string => {
 const observation = (value: Observation<unknown>): string => 'id' in value ? `${cell(value.value)} [${value.id}]` : cell(value);
 const group = (value: Group): string => Object.entries(value.value).map(([field, value]) => `${field}: ${cell(value)}`).join('; ') + ` [${value.id}]`;
 
-export function renderMatchBrief(context: Brief): string {
+export function renderMatchBrief(context: Brief | BriefV2): string {
   const lines = [
     `# Матч ${context.matchId} — ${context.side}`, '',
     `Формат: ${context.format}. Это шаблонное представление входа ИИ; полные локальные подробности сюда не добавлены. Числа округлены только для отображения.`, '',
@@ -45,5 +45,19 @@ export function renderMatchBrief(context: Brief): string {
   lines.push('## Объекты и выкупы', '', ...context.objectives.map(event => `- Объект ${event.index}: ${Object.entries(event.fields).map(([field, value]) => `${field}: ${observation(value)}`).join('; ')}; actor: ${observation(event.actor)}`), ...context.buybacks.map(event => `- Buyback slot ${event.playerSlot}: ${observation(event.time)}`), '', '## Покрытие и ограничения', '',
     '- Покрытие: ' + JSON.stringify(context.coverage), '- Представление групп: ' + JSON.stringify(context.representations), '- Quality: ' + JSON.stringify(context.quality),
     ...context.limitations.map(text => '- ' + text), '', '## Каталог единиц', '', ...Object.entries(context.catalog).map(([field, value]) => `- ${field}: ${value.unit}; ${value.meaning}`), '');
+  if (context.format === 'match-brief-v2') {
+    const summaries = context.summaries;
+    lines.push('## Вычисленные сводки V2', '', '### Смерти в предоставленных карточках', '',
+      'Это суммы наблюдений участников карточек, не уникальные смерти матча. Конфликты заголовков не исправлены.', '');
+    for (const row of summaries.fightDeaths.byFight) lines.push(`- Карточка ${row.index}: ${observation(row.totals)}; неизвестные слоты: ${row.unavailableSlots.join(', ') || 'нет'}; header: ${row.headerStatus}.`);
+    const all = summaries.fightDeaths.allCards;
+    lines.push(`- Все карточки: ${observation(all.totals)}; количество: ${observation(all.cardCount)}; источник: ${all.sourceState}; конфликтные карточки: ${all.conflictingCards.join(', ') || 'нет'}.`, '',
+      '### События уничтожения строений', '',
+      `- ${observation(summaries.buildingKillEvents.counts)}; источник: ${summaries.buildingKillEvents.sourceState}.`,
+      '- Счётчик записей журнала с подтверждённым последним ударом, не всего вклада или уникальных зданий. Ноль известных событий не доказывает отсутствие вклада.', '',
+      '### Порядок значений среди союзников', '', 'Сравнение чисел по возрастанию; это не рейтинг качества. При неполноте минимум относится только к известным значениям.', '');
+    for (const [metric, order] of Object.entries(summaries.allyMetricOrder)) lines.push(`- ${metric}: ${observation(order)}`);
+    lines.push('');
+  }
   return lines.join('\n');
 }

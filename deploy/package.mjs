@@ -10,7 +10,7 @@ try {
   const root = fileURLToPath(new URL('..', import.meta.url)), output = resolve(directory);
   await mkdir(output, { recursive: true });
   const stage = join(output, `.stage-${randomUUID()}`); await mkdir(stage);
-  for (const name of ['dist/src', 'analysis/prompts', 'evaluation/dictionaries/dotaconstants-v1.json', 'package.json', 'package-lock.json',
+  for (const name of ['dist/src', 'analysis/prompts', 'evaluation/dictionaries/dotaconstants-v1.json', 'evaluation/dictionaries/hero-metrics-v1.json', 'package.json', 'package-lock.json',
     'config/service.example.json', 'config/group-settings.example.json', 'deploy/control.sh', 'deploy/receive.sh', 'deploy/worst-player.service', 'deploy/README.md']) {
     await cp(resolve(root, name), join(stage, name), { recursive: true, filter: async path => { if ((await lstat(path)).isSymbolicLink()) throw Error(); return true; } });
   }

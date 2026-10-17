@@ -7,6 +7,28 @@ import { StorageError } from '../src/storage/index.js';
 import { fixture, accepted, commands, interaction, settings, drive, flush, live, data, response, intercepted } from './discord-interface-helpers.js';
 import { deferred } from './opendota-helpers.js';
 
+test('awaiting-data is private with no invented job or ETA; scope checks precede the journal', async t => {
+  const fx = await fixture(t), real = fx.pipe(); let requests = 0;
+  for (const nextCheckAt of [fx.clock.now() + 60000, null]) {
+    const pipeline = { ...real, requestMatch: async () => { requests++; return { status: 'awaiting-data', matchId: 101, code: 'opendota-pending', nextCheckAt } as const; },
+      requestReanalysis: real.requestReanalysis.bind(real), getStatus: real.getStatus.bind(real) } as typeof real;
+    const { handle, ui } = commands(fx, pipeline), command = interaction(); await handle(command);
+    assert.equal(command.responses[0].body.flags, MessageFlags.Ephemeral); assert.match(command.content(), /Матч найден/);
+    assert.match(command.content(), nextCheckAt === null ? /остановлено/ : /Ожидаем данные OpenDota/);
+    assert.doesNotMatch(command.content(), /Задача|job|<t:|ETA|через \d/); assert.equal(fx.calls.length, 0);
+    const before = requests; await handle(interaction({ guildId: '123' })); await handle(interaction({ channelId: '123' })); assert.equal(requests, before); await ui.stop();
+  }
+});
+
+test('saved valid report has priority over a pending discovery candidate without another API call', async t => {
+  const fx = await accepted(t); fx.matches.delete(101);
+  const pipeline = fx.pipe({ historySource: 'steam', automaticSince: fx.clock.now() - 600000 }, { steam: { getMatchHistory: async () => ({ matches: [{ matchId: 101, startTime: 1799998000 }], nextStartAtMatchId: null }) } });
+  const report = await drive(pipeline.discoverOnce(), fx.clock); assert.equal(report.pending, 1);
+  const before = fx.calls.length, { ui, handle } = commands(fx, pipeline), command = interaction(); await handle(command);
+  assert.match(command.content(), /Сохранённый результат/); assert.doesNotMatch(command.content(), /Ожидаем данные/); assert.equal(fx.calls.length, before);
+  assert.equal(fx.posts('analysis').length, 1); assert.equal(command.responses[0].body.flags, MessageFlags.Ephemeral); await ui.stop();
+});
+
 test('interface config is inert, rejects unknown fields/getters and copies group settings', async t => {
   const fx = await fixture(t), deps: DiscordInterfaceDependencies = { client: { on() {}, off() {} } as never, pipeline: fx.pipe(), storage: fx.storage, clock: fx.clock };
   for (const options of [null, {}, { settings, extra: true }, { settings, requestTimeoutMs: 0 }, { settings, requestTimeoutMs: 60001 }, { settings: { ...settings, channelId: '01' } }]) {

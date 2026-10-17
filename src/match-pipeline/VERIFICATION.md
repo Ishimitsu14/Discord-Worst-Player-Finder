@@ -1,4 +1,37 @@
+## Интеграция Gemini runtime — локальная проверка 17 октября 2026
+
+Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.
+
+Изменение add-gemini-runtime-integration соединяет исходные Gemini DTO с SQLite/очередью/Discord/operations; прежние профили и API остаются. Ниже исторические результаты других этапов, они не подтверждают доставку текущего diff.
+
+- test/storage-gemini.test.ts: схема 3, upgrade 1/2, rollback DDL/COMMIT, старые checksums/requestId, смешанные профили, frozen body, SSE/final/quote/evidence, идемпотентность, единственный потомок, эффективный actual/reserve/unknown и reopen/crash. Прежние storage/discovery/crash suites продолжают действовать.
+- test/gemini-runtime.test.ts: инертность, чистые словари без env/сети/файлов, default legacy, prepare-only/basic→parsed, обе стороны/исхода/v1/v2, сохранённый пакет при смене config, 10/30/60 и точный session, recorded/partial/HTTP/malformed/stale/truncated/чужая сессия/отмена, бюджет и смена тарифов, fresh beforeSend, audited operator resume, восстановление valid/final/решения, lease loss и отдельное Steam-обнаружение. Максимум два inference POST на цепочку.
+- test/discord-gemini.test.ts: hostile Unicode/mentions/URL, размеры 6000/1024, четыре основания и три отдельных финальных пункта, стабильный nonce, старый valid при сбое новой ревизии, scope/admin и статусы резерва без выдуманного отчёта. JSON-пример README сравнивается с публичным renderer.
+- test/operations.test.ts и operations-delivery.test.ts: fail bad materials до DB/Gateway/активации/сети, оба семейства пакетов/словарей, отдельный management transport key, health v1 старого/нового вида и безопасные события; allowlist обоих словарей, offline production npm ci с omit=dev, check распакованного артефакта с запрещённым fetch, отсутствие dataDir, отказ missing/corrupt словарю (штатный CLI exit 78).
+
+Используются настоящие временные SQLite и поддельные OpenDota/Gemini SSE/management/Discord. Новые runtime-зависимости не добавлены. now() в GeminiRecoveryDependencies согласует audit checkedAt с Clock/wait; production default Date.now сохранён.
+
+Не проверены текущие Linux/CI/VPS, реальная доставка сообщения, новый платный запрос и recovery провайдера. Не выполнялась калибровка качества или latency. Рабочий config/БД/секреты не менялись. До первого открытия схемы 3 необходим cold backup старым релизом; старый код новую БД не прочитает. Архивация требует отдельного согласованного baseline sync прежних main specs.
+
 # Проверки match-pipeline
+
+## Steam-обнаружение, 17 октября 2026
+
+`test/match-pipeline-steam.test.ts`: **13/13** с настоящими SteamHistoryClient/OpenDotaClient/Storage, временными SQLite, управляемыми часами и поддельными API. Проверены старые defaults/ручной режим без Steam, строгие параметры, status=15/ошибки/авторизация/429, пагинация и продвижение следующих аккаунтов при пределе новых ID, terminal без повторных GET, canonical context, 404→готовность после выпадения из страниц и reopen, нулевое/неизвестное завершение, неполные союзники, граница равенства, скрытый второй ID, конфликт/две стороны, deadline/Retry-After, manual race и сбой между enqueue/admitted. Остановка отменяет незавершённый HTTP и не создаёт второй loop/worker.
+
+Сквозной сценарий: 10 Steam32, три разные пары, приватная история одного участника, две проверки за цикл, запаздывающие OpenDota-данные, reopen и последующая выдача трёх valid-результатов без дополнительных HTTP/генераций. POST анализа здесь поддельные; реальные модель и Discord не вызываются. Реальная миграция проверена отдельно в storage. Прежние тесты parse/analysis/publication оставлены в полном наборе.
+
+Живой read-only прогон нового SteamHistoryClient 17 октября 2026 подтвердил доступную историю 98341323 (5 матчей, последний 9048979975) и status=15 для 122376567: два GET без повторов, 979/252 мс. [Протокол клиента](../steam/VERIFICATION.md). Конвейер/SQLite/OpenDota/AI/Discord этим прогоном не запускались; задержка появления новой игры не измерялась. Linux CI этой локальной версии, миграция production, перенос ключа, включение automatic и подключение Gemini к runtime не выполнены. Итоговый полный прогон указан ниже отдельным дополнением; старый протокол относится к исходному конвейеру.
+
+### Итоговый прогон текущей реализации
+
+Windows x64, Node v22.14.0: `npm.cmd run typecheck` и build успешны; `npm.cmd test` с разрешением файловых операций — **426 тестов: 420 pass, 0 fail, 6 Linux-only skip**. Добавлено 32 теста: Steam 9, storage 6, pipeline 13, operations 2, Discord 2. Полный набор включает прежние parse/analysis/publication и процессные crash/race-проверки. Изначальный запуск operations в sandbox получал write-error на fs.link; focused и полный повтор с разрешением файловых операций успешны.
+
+`openspec.cmd validate add-steam-match-discovery --type change --strict --no-interactive` успешен. CLI отдельно сообщает, что MODIFIED дельту match-pipeline нельзя архивировать до появления baseline main spec; базовые контракты пока находятся в предыдущих changes. Архивирование и перенос чужих изменений не выполнялись. `git diff --check` успешен; проверка 56 файлов выбранных модулей/документов/тестов не нашла текущих известных секретов или хвостовых пробелов. Рабочие локальные настройки не перезаписывались.
+
+Существующая `.github/workflows/service.yml` включает Ubuntu 22.04/Node 22.14.0 и 22.23.3, Windows/Node 22.14.0. Этот локальный diff не отправлен на CI: Linux flock, три receive-сценария и SIGINT/SIGTERM остаются непроверенными для текущей версии. Живые GET нового Steam-клиента проверены отдельно выше; latency свежего матча, Gemini runtime, production backup/миграция/доставка и новая публикация не проверялись. Конфигурационный пример сохраняет automatic=false/prepare-only.
+
+## Исходный конвейер
 
 Проверено 17 октября 2026 на Windows x64: Node.js v22.14.0, встроенная SQLite 3.47.2. Использованы реальные публичные GroupSettings/OpenDota/match-facts/match-analysis/Storage контракты, временные SQLite-файлы и поддельные HTTP/Publisher. Новых npm-зависимостей, миграций или правок соседних модулей нет.
 

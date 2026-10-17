@@ -43,7 +43,7 @@ export function commands(fx: Awaited<ReturnType<typeof fixture>>, pipeline: Matc
 export async function accepted(t: TestContext, matchData = data()) {
   const fx = await fixture(t); fx.matches.set(101, matchData);
   const pipeline = fx.pipe(live); const job = await fx.request(pipeline); await fx.process(pipeline);
-  const stored = fx.storage.getLatestResult(101, 'radiant')!, artifacts = fx.storage.getJobArtifacts(job.id);
+  const stored = fx.storage.getLatestResult(101, 'radiant', 'legacy')!, artifacts = fx.storage.getJobArtifacts(job.id, 'legacy');
   const context: PublicationContext = { job: stored.job, analysis: stored.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! };
   return Object.assign(fx, { context, job, pipeline });
 }

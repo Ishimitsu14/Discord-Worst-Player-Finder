@@ -20,7 +20,7 @@ export interface ClaimAddress {
 }
 export interface Profile {
   version: 1; id: string; contextFormat: 'match-brief-v1'; responseFormat: 'match-analysis-v1'; model: 'xiaomi/mimo-v2.6-pro';
-  temperature: number; maxTokens: number; maxRequestBytes: number; reasoning: 'upstream-default';
+  temperature: number; maxTokens: number; maxRequestBytes: number; reasoning: 'upstream-default' | 'disabled';
   tokenEstimation: 'utf8-bytes-div-2-v1'; provider: { only: string[]; require_parameters: true; allow_fallbacks: boolean };
   calibration: Calibration; calibrationReport: { path: string; digest: string } | null;
 }

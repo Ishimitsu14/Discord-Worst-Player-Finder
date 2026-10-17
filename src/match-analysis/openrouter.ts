@@ -1,4 +1,4 @@
-import type { PreparedAnalysis, Rates, Raw, Usage } from './types.js';
+import type { Profile, Rates, Raw, Usage } from './types.js';
 import { ensure, finite, integer, object, positive, text } from './values.js';
 
 export const completionUrl = 'https://openrouter.ai/api/v1/chat/completions';
@@ -12,7 +12,7 @@ function price(value: unknown): number {
   return amount;
 }
 
-export function inspectMetadata(input: unknown, prepared: PreparedAnalysis): Rates {
+export function inspectMetadata(input: unknown, prepared: { estimatedInputTokens: number; prompt: { profile: { model: string; provider: Profile['provider']; reasoning: string; maxTokens: number } } }): Rates {
   ensure(object(input) && object(input.data), 'metadata-unavailable');
   const { data } = input;
   const profile = prepared.prompt.profile;
@@ -24,8 +24,9 @@ export function inspectMetadata(input: unknown, prepared: PreparedAnalysis): Rat
     return allowed.some(provider => name === provider || tag === provider || !provider.includes('/') && tag.split('/')[0] === provider);
   });
   ensure(endpoints.length > 0, 'unsupported-endpoint');
+  const parameters = ['temperature', 'max_tokens', 'response_format', 'structured_outputs', ...(profile.reasoning !== 'upstream-default' ? ['reasoning'] : [])];
   const rates = endpoints.map(endpoint => {
-    ensure(Array.isArray(endpoint.supported_parameters) && ['temperature', 'max_tokens', 'response_format', 'structured_outputs'].every(parameter => (endpoint.supported_parameters as unknown[]).includes(parameter)), 'unsupported-endpoint');
+    ensure(Array.isArray(endpoint.supported_parameters) && parameters.every(parameter => (endpoint.supported_parameters as unknown[]).includes(parameter)), 'unsupported-endpoint');
     ensure(positive(endpoint.context_length) && prepared.estimatedInputTokens + profile.maxTokens <= endpoint.context_length, 'context-too-large');
     for (const [field, needed] of [['max_prompt_tokens', prepared.estimatedInputTokens], ['max_completion_tokens', profile.maxTokens]] as const) {
       ensure(endpoint[field] == null || positive(endpoint[field]) && needed <= endpoint[field], 'context-too-large');

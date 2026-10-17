@@ -1,44 +1,54 @@
 import { Ajv } from 'ajv';
 import { buildBrief } from './brief.js';
 import { normalize } from './normalize.js';
-import { briefLimitBytes, briefProfile, briefTargetBytes, canonicalSlots, countFields, countMapFields, dictionaryDigest, dictionaryRevision, factsProfile, logFields, mapFields, seriesFields, signedMapFields, summaryFields } from './profile.js';
+import { buildBriefV2 } from './summaries.js';
+import { checkSummariesCoverage } from './coverage.js';
+import { briefLimitBytes, briefProfile, briefProfileV2, briefTargetBytes, canonicalSlots, countFields, countMapFields, dictionaryDigest, dictionaryRevision, factsProfile, factsProfileV2, logFields, mapFields, seriesFields, signedMapFields, summaryFields } from './profile.js';
 import { canonical, ensure, escapePointer, finite, known, number, object, sha } from './values.js';
-import { FactsError, type Brief, type FactsBundle, type FactsOptions, type Manifest, type MatchFactsInput, type Observation, type Player, type Raw } from './types.js';
+import { FactsError, type Brief, type BriefV2, type FactsBundle, type FactsBundleV2, type FactsOptions, type FactsOptionsV2, type Manifest, type ManifestV2, type MatchFactsInput, type Observation, type Player, type Raw } from './types.js';
 
 export * from './types.js';
+export * from './compact-types.js';
+export { validateCompactBundle } from './compact-validation.js';
+export { prepareCompactMatchFacts, verifyCompactFactsBundle, validateCompactReferences, compactReferences, checkCompactSize, renderCompactContext, compactTargetBytes, compactLimitBytes, validateCompactDictionaries } from './compact.js';
 export { briefLimitBytes, briefTargetBytes } from './profile.js';
 
 const validateEnvelope = new Ajv().compile({
   type: 'object', required: ['facts', 'context', 'evidence', 'manifest'], additionalProperties: false,
   properties: {
     facts: { type: 'object', required: ['version', 'format', 'players', 'fights', 'objectives', 'quality', 'derived'], properties: { version: { const: 1 }, format: { const: 'facts-v1' } } },
-    context: { type: 'object', required: ['version', 'format', 'allies', 'opponents', 'fights', 'coverage'], properties: { version: { const: 1 }, format: { const: 'match-brief-v1' } } },
+    context: { type: 'object', required: ['version', 'format', 'allies', 'opponents', 'fights', 'coverage'], properties: { version: { enum: [1, 2] }, format: { enum: ['match-brief-v1', 'match-brief-v2'] } } },
     evidence: { type: 'array', items: { type: 'object', required: ['id', 'value', 'playerSlot', 'metric', 'unit', 'source', 'paths', 'inputs', 'transform', 'parameters'], additionalProperties: false, properties: {
       id: { type: 'string', pattern: '^e[1-9][0-9]*$' }, value: { anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'boolean' }, { type: 'object' }] }, playerSlot: { type: ['number', 'null'] },
       metric: { type: 'string' }, unit: { type: 'string' }, source: { enum: ['snapshot', 'override', 'derived'] }, paths: { type: 'array', items: { type: 'string' } }, inputs: { type: 'array', items: { type: 'string' } }, transform: { type: 'string' }, parameters: { type: 'object', additionalProperties: { type: 'number' } },
     } } },
-    manifest: { type: 'object', required: ['version', 'factsFormat', 'briefFormat', 'bundleId'], properties: { version: { const: 1 }, factsFormat: { const: 'facts-v1' }, briefFormat: { const: 'match-brief-v1' } } },
+    manifest: { type: 'object', required: ['version', 'factsFormat', 'briefFormat', 'bundleId'], properties: { version: { const: 1 }, factsFormat: { const: 'facts-v1' }, briefFormat: { enum: ['match-brief-v1', 'match-brief-v2'] } } },
   },
 });
 
-export function checkBriefSize(context: Brief): { bytes: number; targetMet: boolean; limitMet: boolean } {
+export function checkBriefSize(context: Brief | BriefV2): { bytes: number; targetMet: boolean; limitMet: boolean } {
   const bytes = Buffer.byteLength(JSON.stringify(context), 'utf8');
   ensure(bytes <= briefLimitBytes, 'context-too-large', { bytes, limit: briefLimitBytes });
   return { bytes, targetMet: bytes <= briefTargetBytes, limitMet: true };
 }
 
-export function prepareMatchFacts(input: MatchFactsInput, options: FactsOptions): FactsBundle {
+export function prepareMatchFacts(input: MatchFactsInput, options: FactsOptionsV2): FactsBundleV2;
+export function prepareMatchFacts(input: MatchFactsInput, options: FactsOptions): FactsBundle;
+export function prepareMatchFacts(input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): FactsBundle | FactsBundleV2;
+export function prepareMatchFacts(input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): FactsBundle | FactsBundleV2 {
+  ensure(object(options) && [undefined, 'match-brief-v1', 'match-brief-v2'].includes(options.briefFormat));
+  const v2 = options.briefFormat === 'match-brief-v2';
   const { facts, registry, dictionary, overrides } = normalize(input, options);
-  const context = buildBrief(facts, registry, dictionary);
+  const context = v2 ? buildBriefV2(facts, registry, dictionary) : buildBrief(facts, registry, dictionary);
   checkBriefSize(context);
-  const identity: Omit<Manifest, 'bundleId'> = {
-    version: 1, factsFormat: 'facts-v1', briefFormat: 'match-brief-v1', factsProfile, briefProfile,
-    factsTransform: 'normalize-1', briefTransform: 'summarize-1', matchId: input.matchId, side: input.side,
+  const identity: Omit<Manifest | ManifestV2, 'bundleId'> = {
+    version: 1, factsFormat: 'facts-v1', briefFormat: context.format, factsProfile: v2 ? factsProfileV2 : factsProfile, briefProfile: v2 ? briefProfileV2 : briefProfile,
+    factsTransform: 'normalize-1', briefTransform: v2 ? 'summarize-2' : 'summarize-1', matchId: input.matchId, side: input.side,
     dataDigest: sha(input.data), dictionaryRevision, dictionaryDigest,
     overridesDigest: sha([...overrides].sort((a, b) => a.playerSlot - b.playerSlot)),
     factsDigest: sha(facts), contextDigest: sha(context), evidenceDigest: sha(registry.entries),
   };
-  return { facts, context, evidence: registry.entries, manifest: { ...identity, bundleId: sha(identity) } };
+  return { facts, context, evidence: registry.entries, manifest: { ...identity, bundleId: sha(identity) } } as FactsBundle | FactsBundleV2;
 }
 
 function observations(value: unknown, out = new Map<string, unknown>()): Map<string, unknown> {
@@ -52,17 +62,18 @@ function observations(value: unknown, out = new Map<string, unknown>()): Map<str
   return out;
 }
 
-export function validateFactReferences(ids: string[], bundle: FactsBundle): void {
+export function validateFactReferences(ids: string[], bundle: FactsBundle | FactsBundleV2): void {
   ensure(Array.isArray(ids) && ids.every(id => typeof id === 'string'), 'unknown-fact-reference');
   const sent = observations(bundle.context);
   const entries = new Map(bundle.evidence.map(entry => [entry.id, entry]));
   for (const id of ids) ensure(sent.has(id) && entries.has(id) && canonical(sent.get(id)) === canonical(entries.get(id)!.value), 'unknown-fact-reference');
 }
 
-export function checkCoverage(bundle: FactsBundle, input: MatchFactsInput, options: FactsOptions): { facts: true; brief: true; players: number; fights: number } {
+export function checkCoverage(bundle: FactsBundle | FactsBundleV2, input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): { facts: true; brief: true; players: number; fights: number } {
   const data = input.data as Raw, rawPlayers = data.players as Raw[];
   const full = bundle.facts, brief = bundle.context;
   const require = (value: unknown): void => ensure(value, 'integrity-error');
+  require(brief.format === (options.briefFormat ?? 'match-brief-v1'));
   const dictionary = options.dictionary as { heroes: Raw; items: Raw; abilities: Raw };
   const safeKey = (key: string, field: string): boolean => /^\d+$/.test(key) || [dictionary.heroes, dictionary.items, dictionary.abilities].some(values => Object.hasOwn(values, key)) || /^npc_dota_(?:goodguys|badguys)_(?:tower(?:[1-3]_(?:top|mid|bot)|4(?:_(?:top|mid|bot))?)|(?:melee|range)_rax_(?:top|mid|bot)|fort)$/.test(key) || (['damage_inflictor', 'damage_inflictor_received', 'healing'].includes(field) && ['', 'null'].includes(key));
   const identities = new Map(bundle.evidence.filter(entry => entry.transform === 'identity-v1' && entry.source === 'snapshot').map(entry => [entry.paths[0], entry]));
@@ -137,13 +148,17 @@ export function checkCoverage(bundle: FactsBundle, input: MatchFactsInput, optio
   require(full.objectives.entries.length === (Array.isArray(data.objectives) ? data.objectives.length : 0) && brief.objectives.length === full.objectives.entries.length);
   const fullValues = observations(full);
   for (const [id, value] of observations(brief)) require(fullValues.has(id) && canonical(fullValues.get(id)) === canonical(value));
+  if (bundle.context.format === 'match-brief-v2') checkSummariesCoverage(bundle as FactsBundleV2, input);
   return { facts: true, brief: true, players: rawPlayers.length, fights: rawFights.length };
 }
 
-export function verifyFactsBundle(bundle: unknown, input: MatchFactsInput, options: FactsOptions): FactsBundle {
+export function verifyFactsBundle(bundle: unknown, input: MatchFactsInput, options: FactsOptionsV2): FactsBundleV2;
+export function verifyFactsBundle(bundle: unknown, input: MatchFactsInput, options: FactsOptions): FactsBundle;
+export function verifyFactsBundle(bundle: unknown, input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): FactsBundle | FactsBundleV2;
+export function verifyFactsBundle(bundle: unknown, input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): FactsBundle | FactsBundleV2 {
   try {
     ensure(validateEnvelope(bundle), 'integrity-error');
-    const value = bundle as FactsBundle;
+    const value = bundle as FactsBundle | FactsBundleV2;
     const seen = new Set<string>();
     for (const entry of value.evidence) {
       ensure(!seen.has(entry.id) && entry.inputs.every(id => seen.has(id)), 'integrity-error');

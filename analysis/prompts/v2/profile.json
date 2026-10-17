@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "mimo-match-v2",
+  "contextFormat": "match-brief-v1",
+  "responseFormat": "match-analysis-v1",
+  "model": "xiaomi/mimo-v2.6-pro",
+  "temperature": 0.2,
+  "maxTokens": 32768,
+  "maxRequestBytes": 262144,
+  "reasoning": "disabled",
+  "tokenEstimation": "utf8-bytes-div-2-v1",
+  "provider": { "only": ["xiaomi"], "require_parameters": true, "allow_fallbacks": false },
+  "calibration": "experimental",
+  "calibrationReport": null
+}

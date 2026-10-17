@@ -27,6 +27,12 @@ export function analysisClaims(analysis: MatchAnalysis): { address: ClaimAddress
 export function validateAnalysisForBrief(input: unknown, context: Brief): MatchAnalysis {
   ensure(validate(input), 'invalid-output');
   const analysis = input as unknown as MatchAnalysis;
+  const texts = [
+    ...analysisClaims(analysis).map(({ fact }) => fact.claim),
+    ...analysis.playerAssessments.flatMap(player => player.limitations),
+    ...analysis.selectedPlayers.map(player => player.roast), ...analysis.limitations,
+  ];
+  ensure(texts.every(value => [...value.trim()].length >= 2), 'invalid-output');
   const allies = context.allies;
   const selected = analysis.selectedPlayers;
   const allowed = (slot: number): boolean => allies.some(player => player.playerSlot === slot);

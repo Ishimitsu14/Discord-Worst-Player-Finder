@@ -19,6 +19,8 @@ const reasons: Record<string, string> = {
   'publication-invalid-message': 'Discord отклонил сообщение.', 'publication-rate-limited': 'Discord ограничил отправку; автоматического повтора нет.',
   'publication-transport-error': 'Доставка сообщения не подтверждена.', 'publication-pending': 'Исход отправки ещё не подтверждён.',
   aborted: 'Операция остановлена.', 'eligibility-changed': 'Пригодность матча или сторона изменились.',
+  'analysis-profile-unavailable': 'Материалы профиля анализа недоступны.', 'gemini-recovery-unavailable': 'Сверка запроса недоступна. Нужна ручная проверка.',
+  'gemini-request-recorded': 'OpenRouter зарегистрировал запрос. Повтор не запускается.', 'gemini-retry-consumed': 'Разрешённый повтор уже использован.',
 };
 interface Active { controller: AbortController; promise: Promise<void>; timer?: unknown; cancelled?: 'timeout' | 'stopped' }
 
@@ -68,15 +70,20 @@ class Interface implements DiscordInterface {
       else await this.limited(interaction.reply({ ...body, flags: MessageFlags.Ephemeral } as Parameters<typeof interaction.reply>[0]), active);
     } catch { this.emit({ type: 'error', code: 'reply-failed', interactionId: interaction.id }); }
   }
-  private status(job: Job, attention = false, billingUnknown = false): string {
+  private status(job: Job, attention = false, billingUnknown = false, reservedCostUsd = 0): string {
     return `Задача ${job.id} • версия ${job.revision}: ${states[job.state]}.\nЭтап: ${steps[job.step]}.${job.reason ? `\n${reasons[job.reason] ?? 'Обработка остановлена или ожидает проверки.'}` : ''}`
-      + `${attention ? '\nТребуется внимание: автоматического повтора нет.' : ''}${billingUnknown ? '\nСтоимость запроса неизвестна.' : ''}\nПроверить: /worst-status job_id:${job.id}`;
+      + `${attention ? '\nТребуется внимание: автоматического повтора нет.' : ''}${billingUnknown ? '\nСтоимость запроса неизвестна.' : ''}${reservedCostUsd > 0 ? `\nРезерв бюджета: $${reservedCostUsd.toFixed(6)}; это не подтверждённое списание.` : ''}\nПроверить: /worst-status job_id:${job.id}`;
   }
   private result(result: StoredResult | null): { content: string; embeds?: ReturnType<typeof renderAnalysis>[] } {
     if (!result || !this.scope(result.job)) return { content: '' };
     const artifacts = this.deps.storage.getJobArtifacts(result.job.id);
     ensure(artifacts.bundle && artifacts.snapshot, 'storage-failure', 'command');
-    const embed = renderAnalysis({ job: result.job, analysis: result.attempt, bundle: artifacts.bundle, snapshot: artifacts.snapshot });
+    const common = { job: result.job, snapshot: artifacts.snapshot };
+    const embed = result.analysisProfile === 'gemini' && artifacts.analysisProfile === 'gemini'
+      ? renderAnalysis({ ...common, analysisProfile: 'gemini', analysis: result.attempt, bundle: artifacts.bundle })
+      : result.analysisProfile === 'legacy' && artifacts.analysisProfile === 'legacy'
+        ? renderAnalysis({ ...common, analysis: result.attempt, bundle: artifacts.bundle }) : null;
+    ensure(embed, 'storage-failure', 'command');
     const publication = result.publications.find(item => item.outcome && 'messageId' in item.outcome);
     const messageId = publication?.outcome && 'messageId' in publication.outcome ? publication.outcome.messageId : null;
     return { content: `\nСохранённый результат: версия ${result.job.revision}.${messageId && snowflake(messageId) ? `\nhttps://discord.com/channels/${result.job.settings.guildId}/${result.job.settings.channelId}/${messageId}` : '\nДоставка публичного сообщения не подтверждена.'}`, embeds: [embed] };
@@ -111,18 +118,25 @@ class Interface implements DiscordInterface {
         const status = this.deps.pipeline.getStatus({ jobId });
         if (!this.scope(status.job)) { await this.reply(interaction, unavailable, active, true); return; }
         const result = this.result(status.result);
-        await this.reply(interaction, this.status(status.job, status.attention, status.billingUnknown) + result.content, active, true, { embeds: result.embeds ?? [] });
+        await this.reply(interaction, this.status(status.job, status.attention, status.billingUnknown, status.reservedCostUsd) + result.content, active, true, { embeds: result.embeds ?? [] });
         this.emit({ type: 'command', code: 'completed', interactionId: interaction.id, guildId: interaction.guildId!, channelId: interaction.channelId, jobId: status.job.id }); return;
       }
       const requested: MatchRequestResult = interaction.commandName === 'worst-reanalyze'
         ? await this.limited(this.deps.pipeline.requestReanalysis({ requestId: `discord_${interaction.id}`, matchId: match!, side: side as 'radiant' | 'dire' }, { signal: active.controller.signal }), active)
         : await this.limited(this.deps.pipeline.requestMatch({ matchId: match!, ...(side ? { side } : {}) }, { signal: active.controller.signal }), active);
+      if (requested.status === 'awaiting-data') {
+        const text = requested.nextCheckAt === null
+          ? 'Матч найден, но автоматическое ожидание данных OpenDota остановлено. Можно повторить /worst позже; если данные появятся, команда проверит их заново.'
+          : 'Матч найден. Ожидаем данные OpenDota. Следующая проверка запланирована; время готовности пока неизвестно.';
+        await this.reply(interaction, text, active, true); return;
+      }
       if (!('job' in requested)) {
         await this.reply(interaction, requested.status === 'requires-side' ? `Не удалось определить сторону. Повтори: /worst match_id:${match} side:radiant или side:dire.` : 'Матч не подходит для анализа: нужен завершённый поддерживаемый рейтинговый матч с полной пятёркой союзников.', active, true); return;
       }
       if (!this.scope(requested.job)) { await this.reply(interaction, unavailable, active, true); return; }
       const result = this.result(requested.result);
-      await this.reply(interaction, `${requested.status === 'existing' ? 'Найдена сохранённая задача.' : 'Задача принята.'}\n${this.status(requested.job)}${result.content}`, active, true, { embeds: result.embeds ?? [] });
+      const status = this.deps.pipeline.getStatus({ jobId: requested.job.id });
+      await this.reply(interaction, `${requested.status === 'existing' ? 'Найдена сохранённая задача.' : 'Задача принята.'}\n${this.status(requested.job, status.attention, status.billingUnknown, status.reservedCostUsd)}${result.content}`, active, true, { embeds: result.embeds ?? [] });
       this.emit({ type: 'command', code: 'completed', interactionId: interaction.id, guildId: interaction.guildId!, channelId: interaction.channelId, jobId: requested.job.id });
     } catch (error) {
       const code = this.safeError(error, active);

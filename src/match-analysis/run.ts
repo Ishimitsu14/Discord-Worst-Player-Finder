@@ -5,7 +5,7 @@ import { analysisIdentity, verifyPreparedAnalysis } from './prepare.js';
 import { AnalysisError, type AnalysisAttempt, type AnalyzeDependencies, type AnalyzeOptions, type AttemptError, type FactsBundle, type PreparedAnalysis, type Raw } from './types.js';
 import { digest, ensure, finite, object, parse, positive, text } from './values.js';
 
-function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+export function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const abort = (): void => reject(signal.reason);
     if (signal.aborted) { abort(); return; }

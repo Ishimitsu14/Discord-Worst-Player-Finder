@@ -1,7 +1,9 @@
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { loadGroupSettings } from '../group-settings/index.js';
-import { loadPromptPackage } from '../match-analysis/index.js';
+import { loadPromptPackage, loadGeminiPromptPackage, createPromptPackage, createGeminiPromptPackage } from '../match-analysis/index.js';
+import { validateCompactDictionaries } from '../match-facts/index.js';
+import { isDeepStrictEqual } from 'node:util';
 import { OperationsError, type ServiceConfig, type ServiceInput, type ServiceSecrets } from './types.js';
 
 export const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -22,10 +24,14 @@ export function validateConfig(value: unknown, base: string): ServiceConfig {
     ensure(value.version === 1 && snowflake(value.applicationId) && pathValue(value.groupSettingsPath) && pathValue(value.dataDir));
     const pipeline = value.pipeline === undefined ? {} : value.pipeline;
     const ranges = { pollIntervalMs: [60000], pageSize: [1, 100], maxPagesPerAccount: [1, 10], maxCandidatesPerScan: [1, 1000], workerIdleMs: [1000], pauseMs: [60000],
-      parseTimeoutMs: [1], parsePollMs: [15000], analysisTimeoutMs: [1, 2147483647], publicationTimeoutMs: [1, 2147483647] };
-    keys(pipeline, [], [...Object.keys(ranges), 'mode', 'allowExperimental', 'maxTotalCostUsd', 'maxEstimatedCostPerAttemptUsd']);
+      parseTimeoutMs: [1], parsePollMs: [15000], analysisTimeoutMs: [1, 2147483647], publicationTimeoutMs: [1, 2147483647],
+      discoveryRetryMs: [60000], discoveryTimeoutMs: [60000], maxDiscoveryChecksPerScan: [1, 1000] };
+    keys(pipeline, [], [...Object.keys(ranges), 'mode', 'analysisProfile', 'historySource', 'allowExperimental', 'maxTotalCostUsd', 'maxEstimatedCostPerAttemptUsd']);
+    ensure(pipeline.analysisProfile === undefined || ['legacy', 'gemini'].includes(pipeline.analysisProfile as string));
     for (const [key, [min, max]] of Object.entries(ranges)) if (Object.hasOwn(pipeline, key)) ensure(integer(pipeline[key], min, max));
     ensure((pipeline.parsePollMs ?? 15000) as number <= ((pipeline.parseTimeoutMs ?? 900000) as number));
+    ensure((pipeline.discoveryRetryMs ?? 60000) as number <= ((pipeline.discoveryTimeoutMs ?? 1800000) as number));
+    ensure(pipeline.historySource === undefined || ['opendota', 'steam'].includes(pipeline.historySource as string));
     ensure(pipeline.mode === undefined || ['prepare-only', 'live'].includes(pipeline.mode as string));
     ensure(pipeline.allowExperimental === undefined || typeof pipeline.allowExperimental === 'boolean');
     for (const key of ['maxTotalCostUsd', 'maxEstimatedCostPerAttemptUsd']) {
@@ -41,13 +47,26 @@ export function validateConfig(value: unknown, base: string): ServiceConfig {
 export async function loadService(path: string, secrets: ServiceSecrets = {}, releaseRoot = process.cwd()): Promise<ServiceInput> {
   try {
     const config = validateConfig(await json(path), dirname(resolve(path)));
-    keys(secrets, [], ['discordToken', 'openRouterKey', 'openDotaKey']);
+    keys(secrets, [], ['discordToken', 'openRouterKey', 'openRouterManagementKey', 'openDotaKey', 'steamKey']);
     for (const value of Object.values(secrets)) ensure(value === undefined || typeof value === 'string' && value.trim().length > 0, 'missing-secret');
     ensure(config.pipeline.mode !== 'live' || secrets.openRouterKey, 'missing-secret');
-    const settings = await loadGroupSettings(config.groupSettingsPath), prompt = await loadPromptPackage(resolve(releaseRoot, 'analysis/prompts/v1'));
-    ensure(config.pipeline.mode !== 'live' || prompt.profile.calibration !== 'experimental' || config.pipeline.allowExperimental);
+    ensure(!config.automatic || config.pipeline.historySource !== 'steam' || secrets.steamKey, 'missing-secret');
+    const settings = await loadGroupSettings(config.groupSettingsPath), prompt = await loadPromptPackage(resolve(releaseRoot, 'analysis/prompts/v1')),
+      geminiPrompt = await loadGeminiPromptPackage(resolve(releaseRoot, 'analysis/prompts/gemini-v2'));
     const dictionary = await json(resolve(releaseRoot, 'evaluation/dictionaries/dotaconstants-v1.json'), 4 * 1024 * 1024);
-    ensure(object(dictionary));
-    return { config, settings, prompt, dictionary, releaseRoot: resolve(releaseRoot), secrets: { ...secrets } };
+    const heroMetricsDictionary = await json(resolve(releaseRoot, 'evaluation/dictionaries/hero-metrics-v1.json'), 4 * 1024 * 1024);
+    const input = { config, settings, prompt, geminiPrompt, dictionary, heroMetricsDictionary, releaseRoot: resolve(releaseRoot), secrets: { ...secrets } };
+    validateMaterials(input); return input;
   } catch (error) { if (error instanceof OperationsError) throw error; throw new OperationsError('invalid-config'); }
+}
+export function validateMaterials(input: ServiceInput): void {
+  try {
+    validateCompactDictionaries({ dictionary: input.dictionary, heroMetricsDictionary: input.heroMetricsDictionary });
+    ensure(isDeepStrictEqual(createPromptPackage(input.prompt.files), input.prompt));
+    ensure(isDeepStrictEqual(createGeminiPromptPackage(input.geminiPrompt.files), input.geminiPrompt));
+    ensure(input.secrets.openRouterManagementKey === undefined || typeof input.secrets.openRouterManagementKey === 'string' && input.secrets.openRouterManagementKey.trim().length > 0);
+    ensure(!input.secrets.openRouterManagementKey || input.secrets.openRouterManagementKey !== input.secrets.openRouterKey);
+    const active = input.config.pipeline.analysisProfile === 'gemini' ? input.geminiPrompt : input.prompt;
+    ensure(input.config.pipeline.mode !== 'live' || active.profile.calibration !== 'experimental' || input.config.pipeline.allowExperimental);
+  } catch { throw new OperationsError('invalid-config'); }
 }

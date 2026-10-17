@@ -32,6 +32,24 @@ CREATE UNIQUE INDEX one_active_attempt ON external_attempts(job_id,kind) WHERE r
 CREATE TABLE resolutions (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES external_attempts(id), input TEXT NOT NULL, digest TEXT NOT NULL, created_at INTEGER NOT NULL);
 `;
 
+const discoverySchema = `
+CREATE TABLE discovery_candidates (
+ context_key TEXT NOT NULL CHECK(length(context_key)=64), match_id INTEGER NOT NULL REFERENCES matches(match_id),
+ first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL CHECK(expires_at>first_seen_at),
+ state TEXT NOT NULL CHECK(state IN ('pending','admitted','ignored','needs-attention')), next_check_at INTEGER, reason TEXT,
+ PRIMARY KEY(context_key,match_id), CHECK((state='pending' AND next_check_at IS NOT NULL) OR (state!='pending' AND next_check_at IS NULL))
+);
+CREATE INDEX due_discovery_candidates ON discovery_candidates(context_key,state,next_check_at,expires_at);
+`;
+
+const geminiSchema = `
+ALTER TABLE jobs ADD COLUMN analysis_profile TEXT NOT NULL DEFAULT 'legacy' CHECK(analysis_profile IN ('legacy','gemini'));
+CREATE TABLE gemini_recoveries (
+ parent_attempt_id TEXT PRIMARY KEY REFERENCES external_attempts(id), recovery_ref TEXT NOT NULL REFERENCES artifacts(ref),
+ retry_attempt_id TEXT UNIQUE REFERENCES external_attempts(id), created_at INTEGER NOT NULL
+);
+`;
+
 export function transaction<T>(db: DatabaseSync, run: () => T): T {
   db.exec('BEGIN IMMEDIATE');
   try { const result = run(); db.exec('COMMIT'); return result; }
@@ -49,22 +67,33 @@ export function openDatabase(options: StorageOptions): DatabaseSync {
     const version = db.prepare('PRAGMA user_version').get()!.user_version;
     const empty = db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all().length === 0;
     ensure(application === applicationId || application === 0 && version === 0 && empty, 'incompatible-schema');
-    ensure(version === 0 && empty || version === 1 && application === applicationId, 'incompatible-schema');
-    if (version === 1) {
+    ensure(version === 0 && empty || (version === 1 || version === 2 || version === 3) && application === applicationId, 'incompatible-schema');
+    if (version === 1 || version === 2 || version === 3) {
       ensure(db.prepare('PRAGMA quick_check').all().every(row => row.quick_check === 'ok'), 'integrity-error');
       ensure(db.prepare('PRAGMA foreign_key_check').all().length === 0, 'integrity-error');
       const migrations = db.prepare('SELECT version,checksum FROM migrations ORDER BY version').all();
-      ensure(migrations.length === 1 && migrations[0].version === 1 && migrations[0].checksum === hash(schema), 'incompatible-schema');
+      ensure(migrations.length === version && migrations[0].version === 1 && migrations[0].checksum === hash(schema), 'incompatible-schema');
+      if (version >= 2) ensure(migrations[1].version === 2 && migrations[1].checksum === hash(discoverySchema), 'incompatible-schema');
+      if (version === 3) ensure(migrations[2].version === 3 && migrations[2].checksum === hash(geminiSchema), 'incompatible-schema');
     }
     db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
     ensure(db.prepare('PRAGMA journal_mode').get()!.journal_mode === 'delete' && db.prepare('PRAGMA synchronous').get()!.synchronous === 2
       && db.prepare('PRAGMA foreign_keys').get()!.foreign_keys === 1 && db.prepare('PRAGMA busy_timeout').get()!.timeout === 1000, 'incompatible-schema');
-    if (version === 0) {
+    if (version === 0 || version === 1 || version === 2) {
       const connection = db;
       transaction(connection, () => {
-        connection.exec(schema);
-        connection.prepare('INSERT INTO migrations VALUES(1,?)').run(hash(schema));
-        connection.exec(`PRAGMA application_id=${applicationId}; PRAGMA user_version=1;`);
+        if (version === 0) {
+          connection.exec(schema);
+          connection.prepare('INSERT INTO migrations VALUES(1,?)').run(hash(schema));
+          connection.exec(`PRAGMA application_id=${applicationId};`);
+        }
+        if (version < 2) {
+          connection.exec(discoverySchema);
+          connection.prepare('INSERT INTO migrations VALUES(2,?)').run(hash(discoverySchema));
+        }
+        connection.exec(geminiSchema);
+        connection.prepare('INSERT INTO migrations VALUES(3,?)').run(hash(geminiSchema));
+        connection.exec('PRAGMA user_version=3;');
       });
     }
     return db;

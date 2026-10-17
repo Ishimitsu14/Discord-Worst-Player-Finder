@@ -1,12 +1,17 @@
 import { canonicalSlots, catalog, countMapFields, dictionaryDigest, dictionaryRevision, eventFields, fightMaps, fightMetrics, logFields, mapFields, matchFields, objectiveFields, objectiveTypes, seriesFields, signedMapFields, summaryFields } from './profile.js';
 import { ensure, escapePointer, finite, integer, known, missing, number, object, positive, Registry, sha, state } from './values.js';
-import type { Collection, Dictionary, Event, Facts, FactsOptions, Fields, Fight, Issue, MatchFactsInput, NumericMap, Objective, Observation, Player, Raw, RoleOverride } from './types.js';
+import type { Collection, Dictionary, Event, Facts, FactsOptions, FactsOptionsV2, Fields, Fight, Issue, MatchFactsInput, NumericMap, Objective, Observation, Player, Raw, RoleOverride } from './types.js';
 
 const position = (value: unknown): value is number => integer(value) && value >= 1 && value <= 5;
 export const sameTeam = (a: number, b: number): boolean => (a < 128) === (b < 128);
 export const onSide = (slot: number, side: string): boolean => (slot < 128) === (side === 'radiant');
 
-export function validateInputs(input: MatchFactsInput, options: FactsOptions): { data: Raw; dictionary: Dictionary; overrides: RoleOverride[] } {
+export function validateDictionary(dict: unknown): asserts dict is Dictionary {
+  ensure(object(dict) && dict.version === 1 && dict.revision === dictionaryRevision, 'invalid-dictionary');
+  try { ensure(sha(dict) === dictionaryDigest, 'invalid-dictionary'); } catch { ensure(false, 'invalid-dictionary'); }
+}
+
+export function validateInputs(input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): { data: Raw; dictionary: Dictionary; overrides: RoleOverride[] } {
   ensure(object(input) && positive(input.matchId) && ['radiant', 'dire'].includes(input.side));
   sha(input.data);
   const data = input.data;
@@ -19,8 +24,7 @@ export function validateInputs(input: MatchFactsInput, options: FactsOptions): {
   ensure(canonicalSlots.filter(slot => onSide(slot, input.side)).every(slot => slots.has(slot)), 'unusable-match');
   ensure(object(options), 'invalid-dictionary');
   const dict = options.dictionary;
-  ensure(object(dict) && dict.version === 1 && dict.revision === dictionaryRevision, 'invalid-dictionary');
-  try { ensure(sha(dict) === dictionaryDigest, 'invalid-dictionary'); } catch { ensure(false, 'invalid-dictionary'); }
+  validateDictionary(dict);
   const overrides = options.roleOverrides === undefined ? [] : options.roleOverrides;
   ensure(Array.isArray(overrides), 'invalid-role-override');
   const seen = new Set<number>();
@@ -32,7 +36,7 @@ export function validateInputs(input: MatchFactsInput, options: FactsOptions): {
   return { data, dictionary: dict as unknown as Dictionary, overrides };
 }
 
-export function normalize(input: MatchFactsInput, options: FactsOptions): { facts: Facts; registry: Registry; overrides: RoleOverride[]; dictionary: Dictionary } {
+export function normalize(input: MatchFactsInput, options: FactsOptions | FactsOptionsV2): { facts: Facts; registry: Registry; overrides: RoleOverride[]; dictionary: Dictionary } {
   const { data, dictionary, overrides } = validateInputs(input, options);
   const registry = new Registry();
   const issues: Issue[] = [];

@@ -27,7 +27,7 @@ test('renderer preserves one/two selected players and their facts for both sides
   const fx = await accepted(t);
   const context = structuredClone(fx.context); context.analysis.analysis = modelAnalysis(context.bundle, [0, 2]);
   let embed = renderAnalysis(context); assert.match(embed.fields![0].name, /Anti-Mage/); assert.match(embed.fields![3].name, /Bane/); assert.equal(embed.fields!.length, 7);
-  const dire = await fx.request(fx.pipeline, 101, 'dire'); await fx.process(fx.pipeline); const result = fx.storage.getLatestResult(101, 'dire')!, artifacts = fx.storage.getJobArtifacts(dire.id);
+  const dire = await fx.request(fx.pipeline, 101, 'dire'); await fx.process(fx.pipeline); const result = fx.storage.getLatestResult(101, 'dire', 'legacy')!, artifacts = fx.storage.getJobArtifacts(dire.id, 'legacy');
   embed = renderAnalysis({ job: result.job, analysis: result.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! }); assert.match(embed.title!, /Dire: поражение/);
 });
 
@@ -36,7 +36,7 @@ test('unknown hero falls back to ID and outcome matches the accepted facts', asy
   const fx = await accepted(t, raw), embed = renderAnalysis(fx.context);
   assert.match(embed.fields![0].name, /Герой #9999/); assert.match(embed.title!, /Radiant: поражение/);
   const dire = await fx.request(fx.pipeline, 101, 'dire'); await fx.process(fx.pipeline);
-  const result = fx.storage.getLatestResult(101, 'dire')!, artifacts = fx.storage.getJobArtifacts(dire.id);
+  const result = fx.storage.getLatestResult(101, 'dire', 'legacy')!, artifacts = fx.storage.getJobArtifacts(dire.id, 'legacy');
   assert.match(renderAnalysis({ job: result.job, analysis: result.attempt, bundle: artifacts.bundle!, snapshot: artifacts.snapshot! }).title!, /Dire: победа/);
 });
 

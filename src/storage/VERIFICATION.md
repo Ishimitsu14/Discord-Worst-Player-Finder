@@ -1,4 +1,14 @@
+## Gemini runtime — 17 октября 2026
+
+Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.
+
+Схема 3 проверена настоящей SQLite: fresh/1→3/2→3, rollback DDL/COMMIT, checksums 1/2, старые requestId, Gemini v1/v2 и sourceDataDigest/frozen body, финальные SSE-поля/evidence/quote, immutable audit и один потомок, actual/reserve/unknown без двойного учёта, reopen и шесть границ crash (test/storage-gemini.test.ts). Старый код схему 3 не читает: cold backup старым релизом до первого открытия обязателен.
+
+[Полный локальный протокол](../match-pipeline/VERIFICATION.md). Реальные платные/Discord/VPS-вызовы, Linux/CI текущего diff и калибровка не выполнялись; ниже исторические результаты прежних этапов.
+
 # Проверки storage
+
+Дополнение `add-steam-match-discovery`, 17 октября 2026: build и `node --test dist/test/storage*.test.js` — **53/53**. Шесть новых сценариев проверяют обновление 1→2 с сохранением valid-результата/расхода/артефактов/checksum схемы 1, rollback частичной DDL, компактную запись без стороны/задачи, неизменный срок после повторов/reopen, порядок due и восстановление между enqueueInitial/admitted. Прежние проверки чужой/новой схемы, процессов и попыток также прошли. Это временные SQLite на Windows; production-миграция и восстановление backup не выполнялись. Протокол ниже относится к исходной реализации схемы 1.
 
 Проверено 17 октября 2026 на Windows x64, Node.js v22.14.0, встроенная SQLite 3.47.2. Это минимальная версия Node проекта. Зависимости и код соседних модулей в этом изменении не менялись.
 

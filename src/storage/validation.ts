@@ -1,5 +1,6 @@
 import type { AnalysisAttempt, AnalysisIdentity, PreparedAnalysis, StartedAttempt } from '../match-analysis/index.js';
 import { validateMatchAnalysis } from '../match-analysis/index.js';
+import { isGeminiAttempt, isGeminiBundle, isGeminiPrepared, validateGeminiAnalysis, type GeminiIdentity, type RuntimeAttempt, type RuntimeBundle, type RuntimePrepared, type RuntimeStarted } from '../match-analysis/index.js';
 import type { FactsBundle, ParseOutcome, PublicationOutcome } from './types.js';
 import { canonical, ensure, hash, id, integer, iso, keys, money, object, shortText, snowflake } from './values.js';
 
@@ -9,21 +10,28 @@ const analysisErrors = ['invalid-input', 'integrity-error', 'invalid-package', '
   'estimated-cost-exceeded', 'before-send-failed', 'api-error', 'transport-error', 'timed-out', 'aborted', 'model-mismatch', 'unfinished-or-filtered', 'empty-content', 'secret-in-output'];
 const apiTypes = ['context_length_exceeded', 'max_tokens_exceeded', 'token_limit_exceeded', 'string_too_long', 'authentication', 'rate_limit_exceeded',
   'provider_overloaded', 'provider_unavailable', 'content_policy_violation', 'refusal', 'server', 'timeout', 'unmapped'];
-export function identity(prepared: PreparedAnalysis): AnalysisIdentity { return Object.fromEntries(identityKeys.map(key => [key, (prepared as unknown as Record<string, unknown>)[key]])) as unknown as AnalysisIdentity; }
+export function identity(prepared: RuntimePrepared): AnalysisIdentity | GeminiIdentity { return Object.fromEntries(identityKeys.map(key => [key, (prepared as unknown as Record<string, unknown>)[key]])) as unknown as AnalysisIdentity | GeminiIdentity; }
 function rates(value: unknown): void {
   keys(value, ['input', 'output', 'request', 'endpointNames']);
   ensure(money(value.input) && money(value.output) && money(value.request) && Array.isArray(value.endpointNames) && value.endpointNames.length > 0 && value.endpointNames.every(shortText));
 }
-export function validateStarted(value: StartedAttempt, prepared: PreparedAnalysis, attemptId: string): void {
+export function validateStarted(value: RuntimeStarted, prepared: RuntimePrepared, attemptId: string): void {
   keys(value, [...identityKeys, 'version', 'attemptId', 'status', 'startedAt', 'estimatedCostUsd', 'rates']);
   ensure(value.version === 1 && value.attemptId === attemptId && value.status === 'started' && iso(value.startedAt) && money(value.estimatedCostUsd)); rates(value.rates);
   const actual = Object.fromEntries(identityKeys.map(key => [key, (value as unknown as Record<string, unknown>)[key]]));
   ensure(canonical(actual) === canonical(identity(prepared)), 'integrity-error');
   ensure(value.estimatedCostUsd === prepared.estimatedInputTokens * value.rates.input + prepared.prompt.profile.maxTokens * value.rates.output + value.rates.request, 'integrity-error');
 }
-export function validateAttempt(value: AnalysisAttempt, prepared: PreparedAnalysis, bundle: FactsBundle, attemptId: string, started: StartedAttempt | null): void {
+export function validateAttempt(value: RuntimeAttempt, prepared: RuntimePrepared, bundle: RuntimeBundle, attemptId: string, started: RuntimeStarted | null): void {
   keys(value, ['version', 'attemptId', 'identity', 'status', 'startedAt', 'endedAt', 'elapsedMs', 'requestSent', 'generationId', 'model', 'provider', 'finishReason',
-    'rates', 'estimatedCostUsd', 'usage', 'billingState', 'retryAt', 'error', 'analysis', 'content', 'responseDigest']);
+    'rates', 'estimatedCostUsd', 'usage', 'billingState', 'retryAt', 'error', 'analysis', 'content', 'responseDigest', ...(isGeminiPrepared(prepared) ? ['responseReceived', 'firstContentMs', 'streamBytes'] : [])]);
+  ensure(isGeminiPrepared(prepared) === isGeminiBundle(bundle) && isGeminiPrepared(prepared) === isGeminiAttempt(value), 'integrity-error');
+  if (isGeminiAttempt(value)) {
+    ensure(typeof value.responseReceived === 'boolean' && (value.firstContentMs === null || money(value.firstContentMs)) && integer(value.streamBytes));
+    ensure(value.requestSent || !value.responseReceived && value.firstContentMs === null && value.streamBytes === 0);
+    ensure(value.responseReceived || value.firstContentMs === null && value.streamBytes === 0);
+    ensure(value.firstContentMs === null || value.firstContentMs <= value.elapsedMs);
+  }
   ensure(value.version === 1 && ['preflight-failed', 'valid', 'invalid-output', 'api-error', 'transport-error', 'timed-out', 'aborted'].includes(value.status));
   ensure(iso(value.startedAt) && iso(value.endedAt) && money(value.elapsedMs) && typeof value.requestSent === 'boolean' && (value.retryAt === null || iso(value.retryAt)));
   ensure(value.attemptId === attemptId || value.attemptId === null && !value.requestSent && !started);
@@ -47,7 +55,11 @@ export function validateAttempt(value: AnalysisAttempt, prepared: PreparedAnalys
   }
   if (value.status === 'valid') {
     ensure(value.requestSent && value.error === null && value.analysis !== null && value.model === prepared.prompt.profile.model && value.finishReason === 'stop' && typeof value.content === 'string', 'integrity-error');
-    try { validateMatchAnalysis(value.analysis, bundle); ensure(canonical(JSON.parse(value.content!)) === canonical(value.analysis), 'integrity-error'); } catch { ensure(false, 'integrity-error'); }
+    try {
+      if (isGeminiAttempt(value)) { ensure(isGeminiBundle(bundle) && isGeminiPrepared(prepared) && value.responseReceived, 'integrity-error'); const checked = validateGeminiAnalysis(value.analysis, bundle); ensure(checked.format === prepared.responseFormat, 'integrity-error'); }
+      else { ensure(!isGeminiBundle(bundle), 'integrity-error'); validateMatchAnalysis(value.analysis, bundle); }
+      ensure(canonical(JSON.parse(value.content!)) === canonical(value.analysis), 'integrity-error');
+    } catch { ensure(false, 'integrity-error'); }
   } else ensure(value.analysis === null && value.error !== null);
 }
 export function validateParse(value: ParseOutcome): void {

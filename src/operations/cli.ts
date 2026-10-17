@@ -23,7 +23,7 @@ async function main() {
   }
   const secret = (name: string) => process.env[name] || undefined;
   const root = fileURLToPath(new URL('../../..', import.meta.url));
-  const input = await loadService(values['--config'], { discordToken: secret('DISCORD_BOT_TOKEN'), openRouterKey: secret('OPENROUTER_API_KEY'), openDotaKey: secret('OPENDOTA_API_KEY') }, root);
+  const input = await loadService(values['--config'], { discordToken: secret('DISCORD_BOT_TOKEN'), openRouterKey: secret('OPENROUTER_API_KEY'), openRouterManagementKey: secret('OPENROUTER_MANAGEMENT_KEY'), openDotaKey: secret('OPENDOTA_API_KEY'), steamKey: secret('STEAM_API_KEY') }, root);
   if (command === 'check') { log({ component: 'operations', code: 'configuration-valid' }); return; }
   if (command === 'init') { await initService(input.config); log({ component: 'operations', code: 'initialized' }); return; }
   if (command === 'backup') { await backupService(input.config, resolve(values['--output'])); log({ component: 'operations', code: 'backup-created' }); return; }

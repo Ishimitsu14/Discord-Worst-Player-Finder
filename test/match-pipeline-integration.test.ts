@@ -16,7 +16,7 @@ for (const origin of ['manual', 'automatic'] as const) {
     assert.equal(final.state, 'succeeded'); assert.equal(final.origin, origin); assert.equal(sends, 1);
     const receipts = fx.storage.listAttempts(job.id); assert.deepEqual(receipts.map(item => item.kind).sort(), ['analysis', 'parse', 'publication']); assert.ok(receipts.every(item => item.state === 'finished' && !item.unresolved));
     assert.equal(fx.posts('parse').length, 1); assert.equal(fx.posts('analysis').length, 1); assert.equal(fx.storage.getBillingSummary().knownCostUsd, 0.001);
-    const prepared = fx.storage.getJobArtifacts(job.id).prepared!; assert.equal(fx.posts('analysis')[0].body, prepared.body);
+    const prepared = fx.storage.getJobArtifacts(job.id, 'legacy').prepared!; assert.equal(fx.posts('analysis')[0].body, prepared.body);
     const body = JSON.parse(prepared.body); assert.equal(body.model, prompt.profile.model); assert.equal(body.max_tokens, prompt.profile.maxTokens); assert.deepEqual(body.provider, prompt.profile.provider);
     await pipeline.stop(); fx.reopen(); const next = fx.pipe({ ...live, automaticSince: 1799999000000 }, { publisher: { prepare: () => assert.fail('no repeated preparation'), send: async () => assert.fail('no repeated publication') } });
     assert.equal((await next.processNext()).status, 'idle'); assert.equal((await next.requestMatch({ matchId: 101, side: 'radiant' })).status, 'existing'); assert.ok(next.getStatus({ jobId: job.id }).result);
@@ -27,7 +27,7 @@ for (const origin of ['manual', 'automatic'] as const) {
 
 test('released late valid analysis remains history and cannot become current result automatically', async t => {
   const fx = await fixture(t), preparation = fx.pipe(); const job = await fx.request(preparation); await fx.process(preparation); await preparation.stop(); await fx.clock.tick(300000);
-  const claim = fx.storage.claimNext()!.claim, start = started(fx.storage, claim), bundle = fx.storage.getJobArtifacts(job.id).bundle!;
+  const claim = fx.storage.claimNext()!.claim, start = started(fx.storage, claim), bundle = fx.storage.getJobArtifacts(job.id, 'legacy').bundle!;
   const attention = fx.storage.finish(claim, { state: 'needs-attention', reason: 'unknown' });
   fx.storage.resolveUncertain({ resolutionId: 'release', jobId: job.id, expectedVersion: attention.version, attemptId: start.attemptId, decision: 'allow-new-attempt', state: 'waiting', reason: 'explicit', evidenceRef: 'audit' });
   const content = JSON.stringify(analysis(bundle));

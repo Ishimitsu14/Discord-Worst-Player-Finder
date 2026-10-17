@@ -30,7 +30,7 @@ export function setup(store: Storage, matchId = 101, side: Side = 'radiant') {
   const saved = store.saveInputs(claim, inputs(matchId, side)); return { job, ...saved };
 }
 export function started(store: Storage, claim: Claim, attemptId = randomUUID()) {
-  const job = store.getJob(claim.jobId), prepared = store.getJobArtifacts(job.id).prepared!;
+  const job = store.getJob(claim.jobId), prepared = store.getJobArtifacts(job.id, 'legacy').prepared!;
   store.reserveAnalysis(claim, { attemptId, preparedRef: job.refs.prepared! });
   const { matchId, side, bundleId, contextDigest, packageId, packageDigest, calibration, responseFormat, requestDigest } = prepared;
   const rates = { input: 0.000001, output: 0.000002, request: 0, endpointNames: ['synthetic'] };
@@ -47,7 +47,7 @@ export function invalidAttempt(start: StartedAttempt, costUsd: number | null = 0
     billingState: costUsd === null ? 'unknown' : 'known', retryAt: null, error: { code: 'unfinished-or-filtered' }, analysis: null, content: null, responseDigest: null };
 }
 export async function analyze(store: Storage, claim: Claim, options: { beforeSend?: (value: StartedAttempt) => Promise<void>; onPost?: (body: string) => void; response?: unknown; attemptId?: string } = {}) {
-  const { prepared, bundle } = store.getJobArtifacts(claim.jobId); const attemptId = options.attemptId ?? randomUUID();
+  const { prepared, bundle } = store.getJobArtifacts(claim.jobId, 'legacy'); const attemptId = options.attemptId ?? randomUUID();
   store.reserveAnalysis(claim, { attemptId, preparedRef: store.getJob(claim.jobId).refs.prepared! });
   const attempt = await analyzeMatch(prepared!, bundle!, { attemptId, maxEstimatedCostUsd: 1 }, {
     apiKey: 'synthetic-storage-key', beforeSend: options.beforeSend ?? (async value => store.startAnalysis(claim, attemptId, value)),

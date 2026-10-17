@@ -6,6 +6,27 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
+
+test('workflow: branch preparation builds a release while deployment requires trusted main and explicit enablement', async () => {
+  const workflow = await readFile('.github/workflows/service.yml', 'utf8');
+  const condition = (job: string): string => {
+    const section = workflow.split(new RegExp(`^  ${job}:`, 'm'))[1]?.split(/^  [a-z]+:/m)[0];
+    const expression = section?.match(/^    if: (.+)$/m)?.[1]; assert.ok(expression, job); return expression;
+  };
+  for (const [ref, event, enabled, release, deploy] of [
+    ['refs/heads/feat/release', 'workflow_dispatch', 'true', true, false],
+    ['refs/pull/1/merge', 'pull_request', 'true', false, false],
+    ['refs/heads/main', 'pull_request', 'true', false, false],
+    ['refs/heads/main', 'push', 'false', true, false],
+    ['refs/heads/main', 'push', 'true', true, true],
+    ['refs/heads/main', 'workflow_dispatch', 'true', true, true],
+  ] as const) {
+    const context = { github: { ref, event_name: event }, vars: { DEPLOY_ENABLED: enabled } };
+    assert.equal(runInNewContext(condition('release'), context), release, `${ref}/${event}: release`);
+    assert.equal(runInNewContext(condition('deploy'), context), deploy, `${ref}/${event}: deploy`);
+  }
+});
 
 test('release allowlist contains runtime/revision only and checksum matches exact archive bytes', async t => {
   const root = await mkdtemp(join(tmpdir(), 'operations-release-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -14,11 +35,31 @@ test('release allowlist contains runtime/revision only and checksum matches exac
   assert.equal(packaged.status, 0, packaged.stderr);
   const archive = join(output, 'release.tar.gz'), result = spawnSync('tar', ['-tzf', archive], { encoding: 'utf8', windowsHide: true }); assert.equal(result.status, 0, result.stderr);
   const files = result.stdout.trim().split(/\r?\n/).map(name => name.replace(/^\.\//, ''));
-  for (const name of ['dist/src/operations/cli.js', 'analysis/prompts/v1/profile.json', 'evaluation/dictionaries/dotaconstants-v1.json', 'REVISION', 'package-lock.json', 'deploy/receive.sh']) assert.ok(files.includes(name), name);
+  for (const name of ['dist/src/operations/cli.js', 'analysis/prompts/v1/profile.json', 'analysis/prompts/gemini-v2/profile.json', 'evaluation/dictionaries/dotaconstants-v1.json', 'evaluation/dictionaries/hero-metrics-v1.json', 'REVISION', 'package-lock.json', 'deploy/receive.sh']) assert.ok(files.includes(name), name);
   assert.ok(files.every(name => !/(^|\/)(?:\.local|\.env[^/]*|node_modules|test|\.ssh)(\/|$)/.test(name)));
   const hash = createHash('sha256').update(await readFile(archive)).digest('hex'); assert.equal((await readFile(join(output, 'release.tar.gz.sha256'), 'utf8')).trim(), `${hash}  release.tar.gz`);
   assert.equal(spawnSync('tar', ['-xOf', archive, './REVISION'], { encoding: 'utf8', windowsHide: true }).stdout.trim(), sha);
   assert.equal(spawnSync(process.execPath, ['deploy/package.mjs', sha, output], { windowsHide: true }).status, 1);
+});
+
+test('Gemini production artifact: offline production install/check and missing/corrupt dictionary fail before DB or network', { timeout: 180000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'operations-offline-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const output = join(root, 'artifact'), release = join(root, 'release'); await mkdir(release);
+  assert.equal(spawnSync(process.execPath, ['deploy/package.mjs', 'a'.repeat(40), output], { encoding: 'utf8', windowsHide: true }).status, 0);
+  const unpack = spawnSync('tar', ['-xzf', join(output, 'release.tar.gz'), '-C', release], { encoding: 'utf8', windowsHide: true }); assert.equal(unpack.status, 0, unpack.stderr);
+  const install = process.platform === 'win32'
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'npm.cmd ci --omit=dev --offline --ignore-scripts --no-audit --no-fund'], { cwd: release, encoding: 'utf8', windowsHide: true, timeout: 60000 })
+    : spawnSync('npm', ['ci', '--omit=dev', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: release, encoding: 'utf8', timeout: 60000 });
+  assert.equal(install.status, 0, install.stderr); await assert.rejects(access(join(release, 'node_modules/typescript')));
+  await writeFile(join(release, 'guard.mjs'), 'globalThis.fetch=()=>{throw Error("unexpected network")};');
+  await writeFile(join(release, 'group.json'), JSON.stringify({ steamAccountIds: [123], guildId: '123', channelId: '456' }));
+  await writeFile(join(release, 'service.json'), JSON.stringify({ version: 1, applicationId: '123', groupSettingsPath: 'group.json', dataDir: 'data', pipeline: { analysisProfile: 'gemini' } }));
+  const env = { ...process.env }; for (const key of ['DISCORD_BOT_TOKEN', 'OPENROUTER_API_KEY', 'OPENROUTER_MANAGEMENT_KEY', 'STEAM_API_KEY', 'OPENDOTA_API_KEY']) delete env[key];
+  const check = () => spawnSync(process.execPath, ['--import', './guard.mjs', 'dist/src/operations/cli.js', 'check', '--config', 'service.json'], { cwd: release, env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const valid = check(); assert.equal(valid.status, 0, `${valid.error?.message ?? ''} ${valid.signal ?? ''} ${valid.stderr}`); assert.match(valid.stdout, /configuration-valid/); await assert.rejects(access(join(release, 'data')));
+  const dictionary = join(release, 'evaluation/dictionaries/hero-metrics-v1.json'), original = await readFile(dictionary);
+  await writeFile(dictionary, '{}'); assert.equal(check().status, 78); await rm(dictionary); assert.equal(check().status, 78);
+  await assert.rejects(access(join(release, 'data'))); await writeFile(dictionary, original); assert.equal(check().status, 0);
 });
 
 test('release refuses malformed revision before producing any artifact', async t => {

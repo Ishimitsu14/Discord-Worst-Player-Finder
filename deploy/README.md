@@ -2,6 +2,8 @@
 
 `.github/workflows/service.yml` проверяет все jobs до release/deploy. Только main и явный workflow_dispatch main могут доставлять сборку; PR не получает deploy ключ. `DEPLOY_ENABLED=true` включается после первоначальной подготовки сервера. До этого успешный CI/release не означает работающий CD или бот.
 
+Для подготовки релиза запускайте workflow_dispatch на отдельной ветке: Windows/Linux checks, сборка и проверка production-артефакта выполняются, deploy пропускается. SHA артефакта относится к этой ветке; после merge требуется успешный release для нового SHA main.
+
 Release содержит dist/src, lock/package, prompt, dictionary, примеры и эти deploy-файлы. Сборка использует allowlist; runtime env, БД, .local и тесты не входят. REVISION и SHA256 проверяются до установки. Успех — fresh status ожидаемой revision и active unit; реальный анализ для проверки доставки не запускается.
 
 ## Первоначальная подготовка
@@ -30,4 +32,16 @@ Receive сериализует доставки, устанавливает но
 
 Ручной rollback: остановить свой unit, проверить совместимость прежнего release с текущей БД, заменить current на проверенный releases/<sha>, запустить и проверить fresh revision/status. БД автоматически не восстанавливается. Процедура резервирования и риски старого backup: [operations README](../src/operations/README.md). Очистка releases/incoming и off-host backup выполняются оператором; автоматического удаления в первой версии нет.
 
+Для перехода схемы 1→2 (`add-steam-match-discovery`) backup обязан выполняться старым current до первого открытия БД новым релизом. После миграции прежний релиз отвергнет схему 2: возврат current сам по себе не восстановит сервис. Нужны остановка, сохранение новой БД отдельно и ручное восстановление совместимой пары app.sqlite/operations-state.json с учётом последующих событий. При подготовке этой реализации доставка, рабочий конфиг и секреты не изменяются.
+
 Эти файлы — deploy-контракт и шаблоны. Фактические SSH-права, установленный Node, unit, секреты, проверка rollback и первый GitHub deploy должны быть отдельно подтверждены в operations VERIFICATION; их наличие в Git не является доказательством настройки VPS.
+
+## Артефакт Gemini / схема 3
+
+Allowlist package/receive включает оба prompt family и только dotaconstants-v1.json/hero-metrics-v1.json из dictionaries. Рабочие env, DB, .local, test и ключи не входят. Offline production install/check распакованного артефакта проверяется локально; missing/corrupt словарь отклоняется без БД/Gateway/сети.
+
+До доставки оператор должен обновить root-owned `/usr/local/libexec/wpf-receive` проверенной версией `deploy/receive.sh` и сверить SHA256/права 0755. Прежний receiver отвергает hero-metrics-v1.json до распаковки; включённая в архив новая версия не обновляет установленный SSH receiver. Его обновление само по себе не переключает current и не открывает БД.
+
+Перед первым открытием схемы 3 обязателен cold backup **старым релизом** после остановки unit: app.sqlite + operations-state.json + совместимый config. Старый код не поддерживает новую схему. Автоматическое возвращение current на прежний release не обеспечивает откат БД: сохраните новую БД отдельно и восстановите совместимый backup; учитывайте потерю последующих событий. Новая миграция не имеет SQL downgrade.
+
+Этим изменением VPS, установленный service config и секреты не затрагивались. Наличие workflow или прежнего успешного release не подтверждает CI/Linux/production текущего diff; сообщения/платные генерации на production для проверки доставки не создаются.

@@ -1,6 +1,18 @@
+## Gemini runtime — 17 октября 2026
+
+Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.
+
+Оба prompt family/словаря и отдельный management key проходят CLI→runtime. Bad materials останавливают запуск до DB/Gateway/активации; проверены разделение transport keys, старый/новый health v1, сохранение activation и безопасные агрегаты. Распакованный артефакт прошёл offline npm ci --omit=dev/check, исключает dev dependencies/рабочие данные; corrupt/missing словарь даёт CLI exit 78 без dataDir/сети (operations.test.ts, operations-delivery.test.ts).
+
+[Полный локальный протокол](../match-pipeline/VERIFICATION.md). Реальные платные/Discord/VPS-вызовы, Linux/CI текущего diff и калибровка не выполнялись; ниже исторические результаты прежних этапов.
+
 # Проверки operations
 
-Состояние на 17 октября 2026: 24/24 задач operations реализованы и проверены. Приватный GitHub, Windows/Linux CI, release и доставка на VPS работают; production ready подтверждён для проверенной revision. Секреты, IP и SSH-ключи в этот отчёт не включаются.
+Дополнение `add-steam-match-discovery`, 17 октября 2026: два новых сценария в operations.test.ts прошли с fake Gateway/fetcher/clock и настоящей временной SQLite. Проверены отсутствие ключа до login/активации/сети, manual-only без Steam-ключа, закрытая конфигурация и безопасный пример, сохранение прежней automaticSince при смене источника, независимый cooldown OpenDota при продолжающемся Steam-опросе и безопасные агрегаты/приватный отказ. ready не объявляет полное покрытие. На Windows sandbox блокирует fs.link атомарного состояния; повтор focused-проверок с разрешением файловых операций прошёл. Production/VPS/секреты этим изменением не затрагивались; ниже — исторический протокол прежнего релиза, не подтверждение доставки текущего кода. Linux-матрица в service.yml существует; локальные изменения ещё не проверены на CI/Linux.
+
+Итог локального полного прогона со Steam-изменением: typecheck/build успешны; 426 тестов, 420 pass/6 Linux-only skip/0 fail. Strict OpenSpec успешен. Linux/deploy текущего diff не запускались; схема 2 требует backup старым релизом до первого открытия новым кодом.
+
+Историческое состояние до Steam-изменения, 17 октября 2026: 24/24 задач operations реализованы и проверены. Приватный GitHub, Windows/Linux CI, release и доставка на VPS работают; production ready подтверждён для проверенной revision. Секреты, IP и SSH-ключи в этот отчёт не включаются.
 
 ## Репозиторий и первый CI
 

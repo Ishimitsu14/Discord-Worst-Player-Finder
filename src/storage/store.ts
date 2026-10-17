@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync, SQLInputValue, SQLOutputValue } from 'node:sqlite';
-import { prepareAnalysis, validateAnalysisBundle, validateMatchAnalysis } from '../match-analysis/index.js';
+import { prepareAnalysis, validateAnalysisBundle, prepareGeminiAnalysis, isGeminiBundle, isGeminiPrepared, isGeminiAttempt, geminiRecoveryEligible,
+  type GeminiRecovery, type RuntimeAttempt, type RuntimeBundle, type RuntimePrepared, type RuntimeStarted } from '../match-analysis/index.js';
+import { validateCompactBundle } from '../match-facts/index.js';
 import { openDatabase, transaction } from './database.js';
 import { canonical, digest, encode, ensure, hash, id, integer, keys, object, pair, settings, shortText, translated } from './values.js';
 import { validateAttempt, validateParse, validatePublication, validateStarted } from './validation.js';
+import { eligibleRecovery, validateRecovery } from './recovery.js';
 import type { ArtifactRefs, BillingSummary, Claim, ClaimedJob, EnqueueInput, Inputs, Job, JobArtifacts, MatchRecord, Receipt,
-  RevisionInput, Side, Step, StorageOptions, StoredResult, AnalysisAttempt, StartedAttempt, PreparedAnalysis, FactsBundle, ParseInput, PublicationInput, ParseOutcome, PublicationOutcome, ResolutionInput } from './types.js';
+  RevisionInput, Side, Step, StorageOptions, StoredResult, AnalysisAttempt, StartedAttempt, PreparedAnalysis, FactsBundle, ParseInput, PublicationInput, ParseOutcome, PublicationOutcome, ResolutionInput,
+  DiscoveryCandidate, DiscoveryObservation, DiscoveryDecision, LegacyJobArtifacts, GeminiJobArtifacts, StoredGeminiRecovery } from './types.js';
 import { StorageError } from './types.js';
 
 type Row = Record<string, SQLOutputValue>;
@@ -44,7 +48,7 @@ export class Storage {
   private job(row: Row | undefined): Job {
     ensure(row, 'not-found'); const config = this.verify(() => { const value = JSON.parse(row.settings as string); settings(value); return value; }); ensure(digest(config) === row.settings_digest, 'integrity-error');
     return { id: row.id as string, matchId: row.match_id as number, side: row.side as Side, revision: row.revision as number, origin: row.origin as Job['origin'],
-      settings: config, state: row.state as Job['state'], step: row.step as Step, version: row.version as number, createdAt: row.created_at as number,
+      analysisProfile: row.analysis_profile as Job['analysisProfile'], settings: config, state: row.state as Job['state'], step: row.step as Step, version: row.version as number, createdAt: row.created_at as number,
       updatedAt: row.updated_at as number, nextRunAt: row.next_run_at as number, leaseToken: row.lease_token as string | null,
       leaseUntil: row.lease_until as number | null, reason: row.reason as string | null, resultAttemptId: row.result_attempt_id as string | null,
       refs: { snapshot: row.snapshot_ref as string | null, bundle: row.bundle_ref as string | null, prepared: row.prepared_ref as string | null } };
@@ -73,23 +77,78 @@ export class Storage {
   recordMatch(input: { matchId: number; observedAt: number }): MatchRecord {
     return this.run('recordMatch', () => { keys(input, ['matchId', 'observedAt']); ensure(integer(input.matchId) && input.matchId > 0 && integer(input.observedAt)); return this.tx(() => this.record(input.matchId, input.observedAt)); });
   }
+  private discoveryKey(contextKey: string, matchId?: number): void {
+    ensure(typeof contextKey === 'string' && /^[a-f0-9]{64}$/.test(contextKey));
+    if (matchId !== undefined) ensure(integer(matchId) && matchId > 0);
+  }
+  private candidate(row: Row): DiscoveryCandidate {
+    return { contextKey: row.context_key as string, matchId: row.match_id as number, firstSeenAt: row.first_seen_at as number, lastSeenAt: row.last_seen_at as number,
+      expiresAt: row.expires_at as number, state: row.state as DiscoveryCandidate['state'], nextCheckAt: row.next_check_at as number | null, reason: row.reason as string | null };
+  }
+  getDiscoveryCandidate(contextKey: string, matchId: number): DiscoveryCandidate | null {
+    return this.run('getDiscoveryCandidate', () => { this.discoveryKey(contextKey, matchId); const row = this.get('SELECT * FROM discovery_candidates WHERE context_key=? AND match_id=?', contextKey, matchId); return row ? this.candidate(row) : null; });
+  }
+  observeDiscoveryCandidate(input: DiscoveryObservation): DiscoveryCandidate {
+    return this.run('observeDiscoveryCandidate', () => {
+      keys(input, ['contextKey', 'matchId', 'observedAt', 'expiresAt']); this.discoveryKey(input.contextKey, input.matchId);
+      ensure(integer(input.observedAt) && integer(input.expiresAt) && input.expiresAt > input.observedAt);
+      return this.tx(() => {
+        this.record(input.matchId, input.observedAt);
+        this.write(`INSERT INTO discovery_candidates VALUES(?,?,?,?,?,'pending',?,NULL)
+          ON CONFLICT(context_key,match_id) DO UPDATE SET last_seen_at=max(last_seen_at,excluded.last_seen_at)`,
+        input.contextKey, input.matchId, input.observedAt, input.observedAt, input.expiresAt, input.observedAt);
+        return this.candidate(this.get('SELECT * FROM discovery_candidates WHERE context_key=? AND match_id=?', input.contextKey, input.matchId)!);
+      });
+    });
+  }
+  listDueDiscoveryCandidates(contextKey: string, limit: number): DiscoveryCandidate[] {
+    return this.run('listDueDiscoveryCandidates', () => {
+      this.discoveryKey(contextKey); ensure(integer(limit) && limit >= 1 && limit <= 1000); const now = this.now();
+      return this.all(`SELECT * FROM discovery_candidates WHERE context_key=? AND state='pending' AND (next_check_at<=? OR expires_at<=?)
+        ORDER BY min(next_check_at,expires_at),first_seen_at,match_id LIMIT ?`, contextKey, now, now, limit).map(row => this.candidate(row));
+    });
+  }
+  getDiscoveryCounts(contextKey: string): { pending: number; due: number } {
+    return this.run('getDiscoveryCounts', () => {
+      this.discoveryKey(contextKey); const now = this.now();
+      const row = this.get(`SELECT count(*) AS pending,coalesce(sum(CASE WHEN next_check_at<=? OR expires_at<=? THEN 1 ELSE 0 END),0) AS due
+        FROM discovery_candidates WHERE context_key=? AND state='pending'`, now, now, contextKey)!;
+      return { pending: row.pending as number, due: row.due as number };
+    });
+  }
+  decideDiscoveryCandidate(input: DiscoveryDecision): DiscoveryCandidate {
+    return this.run('decideDiscoveryCandidate', () => {
+      keys(input, ['contextKey', 'matchId', 'state', 'nextCheckAt', 'reason']); this.discoveryKey(input.contextKey, input.matchId);
+      ensure(['pending', 'admitted', 'ignored', 'needs-attention'].includes(input.state));
+      ensure(input.state === 'pending' ? integer(input.nextCheckAt) : input.nextCheckAt === null);
+      ensure(input.reason === null || typeof input.reason === 'string' && /^[a-z][a-z0-9-]{0,79}$/.test(input.reason));
+      return this.tx(() => {
+        const current = this.getDiscoveryCandidate(input.contextKey, input.matchId); ensure(current, 'not-found');
+        ensure(current.state === 'pending' || current.state === input.state && current.reason === input.reason && current.nextCheckAt === input.nextCheckAt, 'conflict');
+        this.write('UPDATE discovery_candidates SET state=?,next_check_at=?,reason=? WHERE context_key=? AND match_id=?', input.state, input.nextCheckAt, input.reason, input.contextKey, input.matchId);
+        return this.getDiscoveryCandidate(input.contextKey, input.matchId)!;
+      });
+    });
+  }
   private insertJob(input: EnqueueInput, revision: number, body: string): Job {
     ensure(integer(revision) && revision > 0);
     const now = this.now(), jobId = randomUUID(); this.record(input.matchId, now);
     this.write(`INSERT INTO jobs(id,match_id,side,revision,origin,settings,settings_digest,state,step,version,created_at,updated_at,next_run_at)
       VALUES(?,?,?,?,?,?,?,'queued','load-match',1,?,?,?)`, jobId, input.matchId, input.side, revision, input.origin, body, digest(input.settings), now, now, now);
+    this.write('UPDATE jobs SET analysis_profile=? WHERE id=?', input.analysisProfile ?? 'legacy', jobId);
     return this.findJob(jobId);
   }
   enqueueInitial(input: EnqueueInput): Job {
     return this.run('enqueueInitial', () => {
-      keys(input, ['matchId', 'side', 'origin', 'settings']); pair(input.matchId, input.side); settings(input.settings); ensure(['manual', 'automatic'].includes(input.origin)); const body = encode(input.settings);
+      keys(input, ['matchId', 'side', 'origin', 'settings'], ['analysisProfile']); pair(input.matchId, input.side); settings(input.settings); ensure(['manual', 'automatic'].includes(input.origin)); ensure(input.analysisProfile === undefined || ['legacy', 'gemini'].includes(input.analysisProfile)); const body = encode(input.settings);
       return this.tx(() => { const previous = this.get('SELECT * FROM jobs WHERE match_id=? AND side=? AND revision=1', input.matchId, input.side); return previous ? this.job(previous) : this.insertJob(input, 1, body); });
     });
   }
   createRevision(input: RevisionInput): Job {
     return this.run('createRevision', () => {
-      keys(input, ['requestId', 'matchId', 'side', 'settings']); ensure(id(input.requestId)); pair(input.matchId, input.side); settings(input.settings);
-      const checksum = digest(input), body = encode(input.settings);
+      keys(input, ['requestId', 'matchId', 'side', 'settings'], ['analysisProfile']); ensure(id(input.requestId)); pair(input.matchId, input.side); settings(input.settings);
+      ensure(input.analysisProfile === undefined || ['legacy', 'gemini'].includes(input.analysisProfile));
+      const { analysisProfile, ...oldInput } = input, checksum = digest(analysisProfile === 'gemini' ? input : oldInput), body = encode(input.settings);
       return this.tx(() => {
         const previous = this.get('SELECT * FROM revision_requests WHERE id=?', input.requestId);
         if (previous) { ensure(previous.digest === checksum, 'conflict'); return this.findJob(previous.job_id as string); }
@@ -137,7 +196,8 @@ export class Storage {
       return this.tx(() => {
         const job = this.owned(claim), unresolved = this.hasUnresolved(job.id);
         ensure(!this.get("SELECT id FROM external_attempts WHERE job_id=? AND state='prepared'", job.id), 'conflict');
-        ensure(input.state === 'needs-attention' ? unresolved : !unresolved, 'conflict');
+        const recovery = job.analysisProfile === 'gemini' && this.get('SELECT r.parent_attempt_id FROM gemini_recoveries r JOIN external_attempts a ON a.id=r.parent_attempt_id WHERE a.job_id=?', job.id);
+        ensure(input.state === 'needs-attention' ? unresolved || recovery : !unresolved, 'conflict');
         ensure(input.state !== 'succeeded' || job.resultAttemptId, 'conflict'); ensure(input.state === 'succeeded' || shortText(input.reason));
         return this.update(job, { state: input.state, reason: input.reason ?? null, leaseToken: null, leaseUntil: null });
       });
@@ -146,14 +206,24 @@ export class Storage {
   private inputs(job: Job): JobArtifacts {
     const { refs } = job;
     const snapshot = refs.snapshot ? this.artifact<JobArtifacts['snapshot']>(refs.snapshot, 'snapshot') : null;
-    const bundle = refs.bundle ? this.artifact<FactsBundle>(refs.bundle, 'bundle') : null;
-    const prepared = refs.prepared ? this.artifact<PreparedAnalysis>(refs.prepared, 'prepared') : null;
+    const bundle = refs.bundle ? this.artifact<RuntimeBundle>(refs.bundle, 'bundle') : null;
+    const prepared = refs.prepared ? this.artifact<RuntimePrepared>(refs.prepared, 'prepared') : null;
     ensure(!snapshot || snapshot.data.match_id === job.matchId, 'integrity-error');
-    if (bundle) ensure(snapshot && bundle.manifest.matchId === job.matchId && bundle.manifest.side === job.side && bundle.manifest.dataDigest === digest(snapshot.data), 'integrity-error');
+    if (bundle) ensure(snapshot && bundle.manifest.matchId === job.matchId && bundle.manifest.side === job.side && (isGeminiBundle(bundle) ? bundle.manifest.sourceDataDigest : bundle.manifest.dataDigest) === digest(snapshot.data), 'integrity-error');
     if (prepared) ensure(bundle && prepared.matchId === job.matchId && prepared.side === job.side && prepared.bundleId === bundle.manifest.bundleId && prepared.contextDigest === bundle.manifest.contextDigest && prepared.requestDigest === hash(prepared.body), 'integrity-error');
-    return { snapshot, bundle, prepared };
+    if (job.analysisProfile === 'gemini') {
+      ensure((bundle === null || isGeminiBundle(bundle)) && (prepared === null || isGeminiPrepared(prepared)), 'integrity-error');
+      return { analysisProfile: 'gemini', snapshot, bundle, prepared };
+    }
+    ensure((bundle === null || !isGeminiBundle(bundle)) && (prepared === null || !isGeminiPrepared(prepared)), 'integrity-error');
+    return { analysisProfile: 'legacy', snapshot, bundle, prepared };
   }
-  getJobArtifacts(jobId: string): JobArtifacts { return this.run('getJobArtifacts', () => this.inputs(this.findJob(jobId))); }
+  getJobArtifacts(jobId: string, profile: 'legacy'): LegacyJobArtifacts;
+  getJobArtifacts(jobId: string, profile: 'gemini'): GeminiJobArtifacts;
+  getJobArtifacts(jobId: string): JobArtifacts;
+  getJobArtifacts(jobId: string, profile?: Job['analysisProfile']): JobArtifacts { return this.run('getJobArtifacts', () => {
+    const result = this.inputs(this.findJob(jobId)); ensure(profile === undefined || profile === result.analysisProfile, 'integrity-error'); return result;
+  }); }
   saveInputs(claim: Claim, input: Inputs): { refs: ArtifactRefs; claim: Claim } {
     return this.run('saveInputs', () => {
       keys(input, [], ['snapshot', 'bundle', 'prepared']); ensure(Object.keys(input).length > 0);
@@ -170,8 +240,17 @@ export class Storage {
           && new Set(snapshot.data.players.map(player => player.player_slot)).size === snapshot.data.players.length);
         ensure(snapshot.parseState === (typeof snapshot.data.version === 'number' && snapshot.data.version > 0 ? 'parsed' : 'basic'));
       }
-      if (merged.bundle) { ensure(merged.snapshot, 'invalid-input'); this.verify(() => validateAnalysisBundle(merged.bundle)); ensure(merged.bundle.manifest.matchId === initial.matchId && merged.bundle.manifest.side === initial.side && merged.bundle.manifest.dataDigest === digest(merged.snapshot.data), 'integrity-error'); }
-      if (merged.prepared) { ensure(merged.bundle, 'invalid-input'); const expected = this.verify(() => prepareAnalysis(merged.bundle!, merged.prepared!.prompt)); ensure(canonical(expected) === canonical(merged.prepared), 'integrity-error'); }
+      if (merged.bundle) {
+        const bundle = merged.bundle; ensure(merged.snapshot, 'invalid-input'); ensure(isGeminiBundle(bundle) === (initial.analysisProfile === 'gemini'), 'integrity-error');
+        this.verify(() => isGeminiBundle(bundle) ? validateCompactBundle(bundle) : validateAnalysisBundle(bundle));
+        ensure(bundle.manifest.matchId === initial.matchId && bundle.manifest.side === initial.side && (isGeminiBundle(bundle) ? bundle.manifest.sourceDataDigest : bundle.manifest.dataDigest) === digest(merged.snapshot.data), 'integrity-error');
+      }
+      if (merged.prepared) {
+        const prepared = merged.prepared, bundle = merged.bundle; ensure(bundle, 'invalid-input');
+        const expected = this.verify(() => { if (isGeminiPrepared(prepared)) { ensure(isGeminiBundle(bundle), 'integrity-error'); return prepareGeminiAnalysis(bundle, prepared.prompt); }
+          ensure(!isGeminiBundle(bundle), 'integrity-error'); return prepareAnalysis(bundle, prepared.prompt); });
+        ensure(canonical(expected) === canonical(prepared), 'integrity-error');
+      }
       return this.tx(() => {
         const job = this.owned(claim), refs = { ...job.refs };
         for (const [kind, body] of Object.entries(bodies)) {
@@ -203,13 +282,17 @@ export class Storage {
   }
   reserveAnalysis(claim: Claim, input: { attemptId: string; preparedRef: string }): Receipt {
     return this.run('reserveAnalysis', () => { keys(input, ['attemptId', 'preparedRef']); ensure(id(input.attemptId) && typeof input.preparedRef === 'string');
-      return this.tx(() => { const job = this.owned(claim); ensure(job.refs.prepared && input.preparedRef === job.refs.prepared, 'conflict'); return this.insertAttempt(job, input.attemptId, 'analysis', input.preparedRef, 'prepared'); });
+      return this.tx(() => {
+        const job = this.owned(claim); ensure(job.refs.prepared && input.preparedRef === job.refs.prepared, 'conflict');
+        if (job.analysisProfile === 'gemini') ensure(!this.listAttempts(job.id).some(receipt => receipt.kind === 'analysis' && (receipt.started || receipt.outcome && 'requestSent' in receipt.outcome && receipt.outcome.requestSent)), 'conflict');
+        return this.insertAttempt(job, input.attemptId, 'analysis', input.preparedRef, 'prepared');
+      });
     });
   }
-  startAnalysis(claim: Claim, reservationId: string, started: StartedAttempt): void {
+  startAnalysis(claim: Claim, reservationId: string, started: RuntimeStarted): void {
     return this.run('startAnalysis', () => {
       const body = encode(started), receipt = this.receipt(reservationId); ensure(receipt.kind === 'analysis');
-      validateStarted(started, this.artifact<PreparedAnalysis>(receipt.inputRef, 'prepared'), receipt.id);
+      validateStarted(started, this.artifact<RuntimePrepared>(receipt.inputRef, 'prepared'), receipt.id);
       this.tx(() => {
         const job = this.owned(claim), current = this.receipt(reservationId); ensure(current.jobId === job.id, 'conflict'); ensure(current.state === 'prepared', 'attempt-already-started');
         ensure(!this.hasUnresolved(job.id, reservationId), 'conflict');
@@ -223,12 +306,12 @@ export class Storage {
     this.write("UPDATE external_attempts SET state='finished',outcome_ref=?,unresolved=?,updated_at=? WHERE id=?", this.put(`${kind}-outcome`, body), unresolved ? 1 : 0, this.now(), attemptId);
     return this.receipt(attemptId);
   }
-  private checkAnalysis(receipt: Receipt, attempt: AnalysisAttempt): void {
-    ensure(receipt.kind === 'analysis'); const prepared = this.artifact<PreparedAnalysis>(receipt.inputRef, 'prepared');
+  private checkAnalysis(receipt: Receipt, attempt: RuntimeAttempt): void {
+    ensure(receipt.kind === 'analysis'); const prepared = this.artifact<RuntimePrepared>(receipt.inputRef, 'prepared');
     const bundle = this.inputs(this.findJob(receipt.jobId)).bundle; ensure(bundle, 'integrity-error');
     validateAttempt(attempt, prepared, bundle, receipt.id, receipt.started);
   }
-  saveAnalysisOutcome(reservationId: string, attempt: AnalysisAttempt): Receipt {
+  saveAnalysisOutcome(reservationId: string, attempt: RuntimeAttempt): Receipt {
     return this.run('saveAnalysisOutcome', () => {
       const body = encode(attempt), receipt = this.receipt(reservationId); this.checkAnalysis(receipt, attempt);
       return this.tx(() => {
@@ -237,7 +320,7 @@ export class Storage {
           ensure(!current.started || attempt.requestSent, 'conflict');
           ensure(current.state !== 'finished', 'conflict');
         }
-        return this.outcome(reservationId, 'analysis', attempt, body, false);
+        return this.outcome(reservationId, 'analysis', attempt, body, isGeminiAttempt(attempt) && attempt.requestSent && attempt.status !== 'valid' && attempt.billingState === 'unknown');
       });
     });
   }
@@ -266,6 +349,43 @@ export class Storage {
   savePublicationOutcome(attemptId: string, outcome: PublicationOutcome): Receipt {
     return this.run('savePublicationOutcome', () => { validatePublication(outcome); const body = encode(outcome); return this.tx(() => this.outcome(attemptId, 'publication', outcome, body, 'state' in outcome && outcome.state === 'unknown')); });
   }
+  getGeminiRecovery(parentAttemptId: string): StoredGeminiRecovery | null {
+    return this.run('getGeminiRecovery', () => {
+      ensure(id(parentAttemptId)); const row = this.get('SELECT * FROM gemini_recoveries WHERE parent_attempt_id=?', parentAttemptId);
+      if (!row) return null;
+      const parent = this.receipt(parentAttemptId), attempt = parent.outcome; ensure(attempt && 'requestSent' in attempt && eligibleRecovery(attempt), 'integrity-error');
+      const recovery = this.artifact<GeminiRecovery>(row.recovery_ref as string, 'gemini-recovery');
+      validateRecovery(recovery, attempt, parentAttemptId, attempt.identity!.requestDigest);
+      return { parentAttemptId, recovery, retryAttemptId: row.retry_attempt_id as string | null, createdAt: row.created_at as number };
+    });
+  }
+  saveGeminiRecovery(parentAttemptId: string, recovery: GeminiRecovery): StoredGeminiRecovery {
+    return this.run('saveGeminiRecovery', () => this.tx(() => {
+      const parent = this.receipt(parentAttemptId), attempt = parent.outcome, job = this.findJob(parent.jobId);
+      ensure(job.analysisProfile === 'gemini' && parent.kind === 'analysis' && attempt && 'requestSent' in attempt && eligibleRecovery(attempt), 'conflict');
+      ensure(!this.get('SELECT parent_attempt_id FROM gemini_recoveries WHERE retry_attempt_id=?', parentAttemptId), 'conflict');
+      validateRecovery(recovery, attempt, parentAttemptId, attempt.identity!.requestDigest);
+      const previous = this.getGeminiRecovery(parentAttemptId);
+      if (previous) { ensure(canonical(previous.recovery) === canonical(recovery), 'conflict'); return previous; }
+      this.write('INSERT INTO gemini_recoveries VALUES(?,?,NULL,?)', parentAttemptId, this.put('gemini-recovery', encode(recovery)), this.now());
+      if (recovery.status === 'recorded' && recovery.costUsd !== null) this.write('UPDATE external_attempts SET unresolved=0,updated_at=? WHERE id=?', this.now(), parentAttemptId);
+      return this.getGeminiRecovery(parentAttemptId)!;
+    }));
+  }
+  reserveGeminiRetry(claim: Claim, input: { parentAttemptId: string; attemptId: string }): Receipt {
+    return this.run('reserveGeminiRetry', () => {
+      keys(input, ['parentAttemptId', 'attemptId']); ensure(id(input.parentAttemptId) && id(input.attemptId) && input.parentAttemptId !== input.attemptId);
+      return this.tx(() => {
+        const job = this.owned(claim), parent = this.receipt(input.parentAttemptId), decision = this.getGeminiRecovery(parent.id);
+        ensure(job.analysisProfile === 'gemini' && parent.jobId === job.id && parent.kind === 'analysis' && decision?.recovery.status === 'retry-allowed' && decision.retryAttemptId === null, 'conflict');
+        ensure(!this.get('SELECT parent_attempt_id FROM gemini_recoveries WHERE retry_attempt_id=?', parent.id), 'conflict');
+        ensure(job.refs.prepared === parent.inputRef, 'integrity-error');
+        this.write('UPDATE external_attempts SET released=1,unresolved=0,updated_at=? WHERE id=?', this.now(), parent.id);
+        const child = this.insertAttempt(job, input.attemptId, 'analysis', parent.inputRef, 'prepared');
+        this.write('UPDATE gemini_recoveries SET retry_attempt_id=? WHERE parent_attempt_id=?', child.id, parent.id); return child;
+      });
+    });
+  }
   recoverInterrupted(): { resumed: number; attention: number } {
     return this.run('recoverInterrupted', () => this.tx(() => {
       const now = this.now(); let resumed = 0, attention = 0;
@@ -273,8 +393,16 @@ export class Storage {
         const job = this.job(row);
         this.write("UPDATE external_attempts SET state='finished',updated_at=? WHERE job_id=? AND state='prepared'", now, job.id);
         this.write("UPDATE external_attempts SET state='interrupted',updated_at=? WHERE job_id=? AND state='started' AND outcome_ref IS NULL", now, job.id);
-        const unresolved = this.hasUnresolved(job.id); this.update(job, { state: unresolved ? 'needs-attention' : 'waiting', leaseToken: null, leaseUntil: null, nextRunAt: now });
-        if (unresolved) attention++; else resumed++;
+        const unresolved = this.hasUnresolved(job.id);
+        const canCheck = job.analysisProfile === 'gemini' && this.listAttempts(job.id).filter(item => item.unresolved && !item.released).every(item => {
+          const value = item.outcome; if (item.kind !== 'analysis' || !value || !('requestSent' in value) || !eligibleRecovery(value)) return false;
+          if (this.get('SELECT parent_attempt_id FROM gemini_recoveries WHERE retry_attempt_id=?', item.id)) return false;
+          const saved = this.getGeminiRecovery(item.id); return saved === null || saved.recovery.status === 'retry-allowed' && saved.retryAttemptId === null;
+        });
+        const consumed = this.get('SELECT a.id FROM gemini_recoveries r JOIN external_attempts a ON a.id=r.retry_attempt_id WHERE a.job_id=? AND a.outcome_ref IS NULL', job.id);
+        const needsAttention = Boolean(consumed) || unresolved && !canCheck;
+        this.update(job, { state: needsAttention ? 'needs-attention' : 'waiting', leaseToken: null, leaseUntil: null, nextRunAt: now });
+        if (needsAttention) attention++; else resumed++;
       }
       return { resumed, attention };
     }));
@@ -307,11 +435,17 @@ export class Storage {
     return this.run('getBillingSummary', () => {
       keys(input, [], ['jobId']); if (input.jobId !== undefined) this.findJob(input.jobId);
       const rows = input.jobId ? this.all("SELECT id FROM external_attempts WHERE kind='analysis' AND job_id=?", input.jobId) : this.all("SELECT id FROM external_attempts WHERE kind='analysis'");
-      const summary: BillingSummary = { knownCostUsd: 0, unknownCount: 0, unfinishedEstimatedCostUsd: 0 };
+      const summary: BillingSummary = { knownCostUsd: 0, unknownCount: 0, unfinishedEstimatedCostUsd: 0, reservedCostUsd: 0, uncoveredUnknownCount: 0 };
       for (const row of rows) {
-        const receipt = this.receipt(row.id as string), outcome = receipt.outcome as AnalysisAttempt | null;
+        const receipt = this.receipt(row.id as string), outcome = receipt.outcome as RuntimeAttempt | null;
+        const recovery = outcome && isGeminiAttempt(outcome) && eligibleRecovery(outcome) ? this.getGeminiRecovery(receipt.id)?.recovery : undefined;
         if (outcome?.billingState === 'known') summary.knownCostUsd += outcome.usage.costUsd!;
-        else if (outcome?.billingState === 'unknown' || !outcome && receipt.started) summary.unknownCount++;
+        else if (recovery?.costUsd !== null && recovery?.costUsd !== undefined) summary.knownCostUsd += recovery.costUsd;
+        else if (outcome?.billingState === 'unknown' || !outcome && receipt.started) {
+          summary.unknownCount++;
+          if (recovery?.reserveUsd) summary.reservedCostUsd += recovery.reserveUsd;
+          if (recovery?.status !== 'retry-allowed' || !recovery.reserveUsd) summary.uncoveredUnknownCount++;
+        }
         if (!outcome && receipt.started) summary.unfinishedEstimatedCostUsd += receipt.started.estimatedCostUsd;
       }
       return summary;
@@ -320,7 +454,7 @@ export class Storage {
   private receipt(attemptId: string): Receipt {
     ensure(id(attemptId)); const row = this.get('SELECT * FROM external_attempts WHERE id=?', attemptId); ensure(row, 'not-found');
     const job = this.findJob(row.job_id as string), inputRef = row.input_ref as string;
-    const input = row.kind === 'analysis' ? this.artifact<PreparedAnalysis>(inputRef, 'prepared')
+    const input = row.kind === 'analysis' ? this.artifact<RuntimePrepared>(inputRef, 'prepared')
       : row.kind === 'parse' ? this.artifact<ParseInput>(inputRef, 'parse-input') : this.artifact<PublicationInput>(inputRef, 'publication-input');
     if ('matchId' in input) ensure(input.matchId === job.matchId, 'integrity-error');
     if ('side' in input) ensure(input.side === job.side && job.refs.prepared === inputRef, 'integrity-error');
@@ -334,11 +468,18 @@ export class Storage {
       outcome: row.outcome_ref ? this.artifact(row.outcome_ref as string, `${row.kind}-outcome`) : null, resolutions };
   }
   listAttempts(jobId: string): Receipt[] { return this.run('listAttempts', () => { this.findJob(jobId); return this.all('SELECT id FROM external_attempts WHERE job_id=? ORDER BY created_at,id', jobId).map(row => this.receipt(row.id as string)); }); }
-  getLatestResult(matchId: number, side: Side): StoredResult | null {
+  getLatestResult(matchId: number, side: Side, profile: 'legacy'): Extract<StoredResult, { analysisProfile: 'legacy' }> | null;
+  getLatestResult(matchId: number, side: Side, profile: 'gemini'): Extract<StoredResult, { analysisProfile: 'gemini' }> | null;
+  getLatestResult(matchId: number, side: Side): StoredResult | null;
+  getLatestResult(matchId: number, side: Side, profile?: 'legacy' | 'gemini'): StoredResult | null {
     return this.run('getLatestResult', () => {
       pair(matchId, side); const row = this.get('SELECT * FROM jobs WHERE match_id=? AND side=? AND result_attempt_id IS NOT NULL ORDER BY revision DESC LIMIT 1', matchId, side); if (!row) return null;
-      const job = this.job(row), receipt = this.receipt(job.resultAttemptId!); ensure(receipt.kind === 'analysis' && (receipt.outcome as { status?: string })?.status === 'valid', 'integrity-error');
-      return { job, attempt: receipt.outcome as StoredResult['attempt'], publications: this.all("SELECT id FROM external_attempts WHERE job_id=? AND kind='publication' ORDER BY created_at,id", job.id).map(item => this.receipt(item.id as string)) };
+      const job = this.job(row), receipt = this.receipt(job.resultAttemptId!); ensure(profile === undefined || job.analysisProfile === profile, 'integrity-error');
+      ensure(receipt.kind === 'analysis' && (receipt.outcome as { status?: string })?.status === 'valid', 'integrity-error');
+      const attempt = receipt.outcome; ensure(attempt && 'requestSent' in attempt, 'integrity-error');
+      const publications = this.all("SELECT id FROM external_attempts WHERE job_id=? AND kind='publication' ORDER BY created_at,id", job.id).map(item => this.receipt(item.id as string));
+      if (isGeminiAttempt(attempt)) { ensure(job.analysisProfile === 'gemini', 'integrity-error'); return { analysisProfile: 'gemini', job, attempt, publications }; }
+      ensure(job.analysisProfile === 'legacy', 'integrity-error'); return { analysisProfile: 'legacy', job, attempt, publications };
     });
   }
 }

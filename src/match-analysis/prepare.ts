@@ -18,6 +18,7 @@ export function prepareAnalysis(input: FactsBundle, inputPackage: PromptPackage)
   const context = JSON.stringify(bundle.context);
   const body = JSON.stringify({
     model: profile.model, stream: false, temperature: profile.temperature, max_tokens: profile.maxTokens, provider: profile.provider,
+    ...(profile.reasoning === 'disabled' ? { reasoning: { enabled: false } } : {}),
     response_format: { type: 'json_schema', json_schema: { name: 'match_analysis_v1', strict: true, schema: prompt.schema } },
     messages: [
       { role: 'system', content: `Пакет инструкции: ${profile.id}; SHA-256 ${prompt.digest}.\n\n${prompt.files['instruction.md']}` },

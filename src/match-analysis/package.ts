@@ -1,6 +1,6 @@
 import { Ajv } from 'ajv';
 import { validateExampleAnalysis } from './analysis.js';
-import { responseSchema } from './response-schema.js';
+import { portableResponseSchema, responseSchema } from './response-schema.js';
 import { AnalysisError, type Example, type PackageFiles, type Profile, type PromptPackage } from './types.js';
 import { digest, ensure, object, parse, sha, text } from './values.js';
 
@@ -12,7 +12,7 @@ const validateProfile = new Ajv().compile({
   properties: {
     version: { const: 1 }, id: string, contextFormat: { const: 'match-brief-v1' }, responseFormat: { const: 'match-analysis-v1' }, model: { const: 'xiaomi/mimo-v2.6-pro' },
     temperature: { type: 'number', minimum: 0, maximum: 2 }, maxTokens: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
-    maxRequestBytes: { type: 'integer', minimum: 1, maximum: 262144 }, reasoning: { const: 'upstream-default' }, tokenEstimation: { const: 'utf8-bytes-div-2-v1' },
+    maxRequestBytes: { type: 'integer', minimum: 1, maximum: 262144 }, reasoning: { enum: ['upstream-default', 'disabled'] }, tokenEstimation: { const: 'utf8-bytes-div-2-v1' },
     provider: { type: 'object', additionalProperties: false, required: ['only', 'require_parameters', 'allow_fallbacks'], properties: {
       only: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', pattern: '^[a-z0-9-]+(?:/[a-z0-9._-]+)*$' } },
       require_parameters: { const: true }, allow_fallbacks: { type: 'boolean' },
@@ -31,7 +31,7 @@ export function createPromptPackage(files: PackageFiles, calibrationEvidence: st
     const profile = parse(copy['profile.json'], 'invalid-package');
     const schema = parse(copy['response.schema.json'], 'invalid-package');
     const examples = parse(copy['examples.json'], 'invalid-package');
-    ensure(validateProfile(profile) && object(schema) && sha(schema) === sha(responseSchema), 'invalid-package');
+    ensure(validateProfile(profile) && object(schema) && [sha(responseSchema), sha(portableResponseSchema)].includes(sha(schema)), 'invalid-package');
     const settings = profile as Profile;
     if (settings.calibration === 'experimental') ensure(settings.calibrationReport === null && calibrationEvidence === null, 'invalid-package');
     else {

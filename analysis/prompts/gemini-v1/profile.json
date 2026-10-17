@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "gemini-match-v1",
+  "contextFormat": "gemini-compact-v1",
+  "responseFormat": "gemini-match-analysis-v1",
+  "model": "google/gemini-3.8-flash",
+  "temperature": 0.65,
+  "maxTokens": 2048,
+  "maxRequestBytes": 32768,
+  "reasoning": "low",
+  "timeoutMs": 180000,
+  "tokenEstimation": "utf8-bytes-div-2-v1",
+  "provider": {
+    "only": [
+      "google-ai-studio"
+    ],
+    "require_parameters": true,
+    "allow_fallbacks": false
+  },
+  "calibration": "experimental",
+  "calibrationReport": null
+}

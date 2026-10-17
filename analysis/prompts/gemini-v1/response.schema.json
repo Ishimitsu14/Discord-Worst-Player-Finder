@@ -1,0 +1,108 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "format",
+    "selectedPlayerSlot",
+    "nomination",
+    "facts",
+    "quoteId",
+    "verdict",
+    "confidence",
+    "limitations"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "format": {
+      "const": "gemini-match-analysis-v1"
+    },
+    "selectedPlayerSlot": {
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        128,
+        129,
+        130,
+        131,
+        132
+      ]
+    },
+    "nomination": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "\\S"
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "evidenceIds"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "\\S"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^e[1-9][0-9]*$"
+            }
+          }
+        }
+      }
+    },
+    "quoteId": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^e[1-9][0-9]*$"
+        }
+      ]
+    },
+    "verdict": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "pattern": "\\S"
+    },
+    "confidence": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "\\S"
+      }
+    }
+  }
+}

@@ -1,8 +1,20 @@
+## Gemini runtime — 17 октября 2026
+
+Финальный локальный прогон: Windows / Node.js 22.14.0; typecheck/build успешны; npm test — 486 тестов, 480 pass, 6 Linux-only skip, 0 fail. Strict OpenSpec и git diff --check успешны; проверка изменённых исходников/документов не нашла секретов. Offline production install/check артефакта прошёл. Linux/CI/VPS текущего diff не запускались.
+
+Gemini v1/v2 подключён через presentation. Обе стороны/исхода, own quote/time, четыре основания и три последних пункта, hostile Unicode/URL/mentions, 6000/1024 и nonce проверены. /worst/status читают смешанные результаты без внешних запросов; ошибка новой ревизии не скрывает старый valid. JSON-пример README сверяется с renderer (test/discord-gemini.test.ts).
+
+[Полный локальный протокол](../match-pipeline/VERIFICATION.md). Реальные платные/Discord/VPS-вызовы, Linux/CI текущего diff и калибровка не выполнялись; ниже исторические результаты прежних этапов.
+
 # Проверки discord-interface
+
+Дополнение `add-steam-match-discovery`, 17 октября 2026: два новых command-сценария прошли. awaiting-data возвращает приватный ответ без выдуманного job ID/ETA, включая прекращённое ожидание; guild/channel проверяются до чтения pipeline. Сохранённый valid имеет приоритет даже при pending-кандидате и недоступном OpenDota, без новых HTTP/analysis/publication. Прежние проверки прав, scoped-результатов и доставки сохраняются. Это fake interactions/HTTP и временная SQLite; новая версия не подключалась к реальному Discord/VPS.
 
 Проверено 17 октября 2026 на Windows x64: Node.js v22.14.0, встроенная SQLite 3.47.2. Модуль использует публичные контракты GroupSettings, MatchPipeline, match-analysis и Storage. В сквозных тестах работают настоящий Discord SDK/REST, реальные публичные модули конвейера, временная SQLite и поддельный HTTP; Discord login не выполняется.
 
 ## Результаты
+
+Текущий полный прогон со Steam-изменением: 426 тестов, 420 pass/6 Linux-only skip/0 fail; typecheck/build и strict OpenSpec успешны. Таблица ниже сохраняет результаты исходной реализации.
 
 | Проверка | Результат |
 |---|---|
