@@ -1,3 +1,9 @@
+## Production: авторазбор новых матчей — 18 октября 2026
+
+Режим on-command доставлен на VPS в SHA `5fa610aebbb5ee93b4b25ca6045166471b212c0e`; [main CI/CD 39068184254](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39068184254) успешен. Typecheck/build и production install/check успешны. Обе Linux-конфигурации (Node 22.14.0/22.23.3) — 495/495; Windows/22.14.0 — 489 pass/6 Linux-only skip/0 fail. Strict OpenSpec — 15/15. Проверка 299 файлов по известным шаблонам секретов/приватных путей не нашла совпадений; это ограниченная проверка шаблонов.
+
+Первая production-активация сохранила automaticSince=`1792270545647` (`2026-10-17T20:55:45.647Z`): старые и равные границе матчи не допускаются к анализу, state/DB не сбрасывались. После запуска read-only oldAnalyzed=0; automatic/live/Gemini/Steam/on-command и готовность сервиса подтверждены. Денежный лимит снят по явному решению пользователя. Авторазбор молчит до /worst; реальные тестовые генерации/публикации на production не выполнялись. [Полный протокол доставки и границы проверки](../operations/VERIFICATION.md). Ниже — результаты локального этапа и исторические проверки.
+
 ## Авторазбор и публикация по команде — 18 октября 2026
 
 Режим publicationMode=on-command реализован на прежней SQLite схеме 3: auto-valid сохраняется в waiting/publication-ready, worker возвращает idle, до `/worst` нет publication receipt/POST. Scoped intent атомарен, повтор не меняет версию, claim/checkpoint/reopen сохраняют разрешение. После команды один настоящий Discord REST SDK POST использует сохранённый анализ; неизвестная отправка остаётся needs-attention без повторного POST. `/worst-status` и команда до готовности не выдают разрешение заранее, чужая цель не меняет задачу. Default automatic и первоначальный ручной origin сохраняют прежнее поведение.
