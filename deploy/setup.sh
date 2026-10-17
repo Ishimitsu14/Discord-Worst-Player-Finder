@@ -45,6 +45,7 @@ ssh-keygen -lf "$work/actions.pub"
 key=$(cat "$work/actions.pub")
 [[ "$key" == ssh-ed25519\ * ]] || exit 65
 install -d -o root -g worst-player-deploy -m 0750 /home/worst-player-deploy
+install -d -o worst-player-deploy -g worst-player-deploy -m 0700 /home/worst-player-deploy/.npm
 install -d -o root -g worst-player-deploy -m 0750 /home/worst-player-deploy/.ssh
 authorized=/home/worst-player-deploy/.ssh/authorized_keys
 if [[ ! -f "$authorized" ]]; then install -o root -g worst-player-deploy -m 0640 /dev/null "$authorized"; fi

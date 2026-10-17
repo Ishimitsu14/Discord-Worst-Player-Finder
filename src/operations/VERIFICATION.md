@@ -26,7 +26,9 @@ Windows sandbox запрещает msys namespace и rename временного
 
 Дополнены Linux-only тесты delivery: реальный flock с конфликтом второго процесса и освобождением после завершения, tar/checksum/staging, fake NPM/control/systemctl boundary, успешная смена кода, возврат прежнего current при health failure и отказ некорректному архиву до управляющих действий. Они выполняются в Linux CI, а Windows явно пропускает эти четыре сценария.
 
-Для commit `fdc9fdba6600a1015f557417c197a227f8ea3fb9` в [CI](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39022637093) уже успешны оба Linux jobs (Node 22.14.0/22.23.3), включая эти четыре сценария; Windows и release ещё выполняются. Новые проверки CLI fake REST, SIGINT/SIGTERM и backup copy-failure будут проверены следующим run.
+Для commit `fdc9fdba6600a1015f557417c197a227f8ea3fb9` в [CI](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39022637093) успешны все три jobs (Windows, Linux Node 22.14.0/22.23.3), включая четыре Linux delivery-сценария, и release с распакованным production install/check. Deploy штатно skipped до первоначальной настройки. Скачанный CI archive проверен отдельно: SHA256 `8b2461978ac162a2e7aeeb8ef8dad436922a8406b09e601a7713504043e6e6ac`, правильный REVISION, 91 запись без рабочих секретов/БД/тестов.
+
+Финальный набор для `1969efe60886599dc7afaffa0fdb3f7bacc492f8` в [CI](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39022904299) тоже успешен: Linux Node 22.14.0 и 22.23.3 — 319/319, Windows — 313 pass/6 Linux-only skip. SIGINT/SIGTERM child tests и все delivery/fault сценарии подтверждены. Release/extracted production install/check/upload успешны. SHA256 скачанного артефакта `2a5a1dbbf4b447ef6b765a4f3c019d4c54b190a5479d0c240206c8bba1594f8b` и REVISION совпадают.
 
 Локальный focused operations/delivery: 23 теста, 17 pass/6 skip. Дополнительные проверки используют реальную эксклюзивную блокировку SQLite для фатального Storage error, отказ второго copyFile для прерывания backup и дочерний CLI с подменой SDK/REST. Исходная БД/предыдущий backup сохраняются, manifest прерванной копии отсутствует, явная регистрация выполняет ровно три guild-запроса и безопасно сообщает partial. Signal child-process проверки выполняются только Linux; Windows process.kill не моделирует POSIX-сигналы. Test preload не входит в release.
 
@@ -38,7 +40,13 @@ Windows sandbox запрещает msys namespace и rename временного
 
 SSH выделенным ключом успешно аутентифицируется, произвольная команда отвергнута forced receiver с кодом 64. Scoped sudo проверен через sudo -l и visudo. systemd-analyze verify успешен, unit disabled/inactive, TimeoutStopSec=75s, RestartPreventExitStatus=75/78. Бот, тесты и платная генерация на VPS не запускались.
 
-Новый приватный deploy-ключ остаётся только локально. Автоматическая проверка разрешений отклонила его отправку в GitHub Secrets до явного разрешения пользователя; отклонённая команда не выполнялась. Root SSH-ключ не передавался. Discord application/guild/channel ID получены; локальная production конфигурация прошла offline check. Пустой env-файл создан вне Git, пользователь заполняет DISCORD_BOT_TOKEN; значение не выводится.
+Контрольные суммы установленных root-owned control/receive/unit совпадают с проверенным исходным кодом. Доступность SSH, установленные helper/unit и прохождение CI не означают, что runtime release уже доставлен либо бот подключён.
+
+По явному разрешению пользователя новый ограниченный deploy-ключ и проверенный known_hosts сохранены в GitHub Secrets DEPLOY_SSH_KEY/DEPLOY_KNOWN_HOSTS. Variables host/user/port заданы, секреты проверены только по именам. Root SSH-ключ не передавался. До первого deploy DEPLOY_ENABLED=false.
+
+Проверенный CI release 1969efe установлен выделенным receiver по SSH; digest/REVISION на VPS совпадают. Первая установка npm ci вернула 243 при отсутствующем cache внутри root-owned home; отдельный deploy-owned .npm (0700) подготовлен и добавлен в setup.sh. Повтор той же установки успешен, root-owned home/.ssh не меняли владельца. Receiver завершился configuration-required до переключения current/запуска unit. Это начальная подготовка, не успешный GitHub deployment.
+
+Discord application/guild/channel проверены read-only API, токен не выводился. Runtime env и public JSON помещены вне release с root:worst-player 0640. От app-user явно выполнены check/init: создана новая БД/state (0600), автоматическая граница null. register-commands вернул complete для worst/worst-status/worst-reanalyze; сообщений не отправляли. Unit пока disabled/inactive, первый start ожидает доставку через Actions.
 
 ## Границы проверки
 
@@ -46,10 +54,25 @@ Runtime действительно собирает публичные моду�
 
 Cold backup требует внешней остановки и общей Linux блокировки; API не доказывает отсутствие произвольных сторонних писателей. Manifest записывается последним, restore не выполняется автоматически. После старой копии нужна сверка внешних эффектов. Тесты shutdown не обещают сохранить ответ после принудительного завершения процесса.
 
+## Сверка requirements
+
+| Требования operations | Код / свидетельство |
+|---|---|
+| Приватная история исходников | GitHub API isPrivate, main/origin, начальный push, проверка staged paths/credential formats и ignore |
+| Явная конфигурация, check без эффектов, init без перезаписи | config.ts/state.ts/CLI, strict config/load/check/init tests; production JSON вне Git прошёл offline check |
+| Постоянная automaticSince и допуск live | activation/reopen/disable/enable/write-failure tests; defaults manual/prepare-only, live key/budgets/experimental validation |
+| Сборка после ready, явная регистрация | runtime fake Client startup/timeout/cleanup, CLI fake REST complete/partial, Linux child start без регистрации |
+| Остановка и безопасные ошибки | grace/deadline/late ID, SQLite exclusive contention, SDK exception, повтор stop и Linux repeated signals |
+| Проверяемая готовность версии | fresh/stale/dead PID/extra-field tests, безопасный billing; реальный production ready ещё не подтверждён |
+| Проверки до доставки и доверенная main | успешный Windows/Linux CI, закреплённые actions, needs всех checks, main/non-PR gates и отдельная concurrency без cancel |
+| Артефакт без рабочих данных | allowlist tests, exact digest/revision скачанного CI archive, извлечённый production install/check |
+| Изолированный сервис, единственный процесс, restart | SSH inventory/permissions/forced key/helper hashes, visudo/systemd-analyze verify; Linux flock conflict/reacquire; unit grace 75s и prevent 75/78 |
+| Откат кода сохраняет данные | Linux receiver fault tests: прежний current и data sentinel сохранены, failed deploy ненулевой; реальный production rollback не выполнялся |
+| Backup и восстановление | копия открывается публичным Storage; second copyFile failure не создаёт manifest/не меняет source/предыдущий backup; runbook stop/lock/restore/external-effect reconciliation |
+| Честное подтверждение deployment | этот отчёт разделяет CI/release, подготовку VPS и ещё не выполненные secrets/delivery/init/register/ready; production unit/integration тесты не выполняются |
+
 ## Ещё не подтверждено
 
-- Новый полный CI после исправления race и добавления runtime/release, проверка production install извлечённого артефакта и успешная загрузка artifact.
-- Реальные service restart/backup/rollback; базовая установка, права и systemd-analyze verify подтверждены выше.
-- Scoped deploy key/known_hosts и GitHub secrets/vars; DEPLOY_ENABLED не включён. Подготовленный deploy job ещё не означает действующую доставку.
-- Реальные Discord application/guild/channel/settings/token, явные init/register/start и fresh production health нужной revision. Ключи в чат не запрашиваются.
-- Signal CLI child-process ожидает Linux CI; локальные Storage-fatal и backup copy-failure успешны. Requirement-to-test audit ещё требует завершения перед отметкой всего модуля готовым.
+- Первая успешная доставка через GitHub Actions и fresh production health нужной revision; config/env/init/register готовы, unit пока не запущен.
+- Реальный service restart/backup на обновлении. Production rollback не инициируется ради теста; его fault-сценарий проверен в Linux CI.
+- Реальные сообщения, платный анализ и калибровка MiMo не проверялись и не включались.
