@@ -25,12 +25,12 @@ async function fixture(t: TestContext, changes: Record<string, unknown> = {}) {
 function fakeClient() {
   const client = new Client({ intents: [GatewayIntentBits.Guilds], rest: { hashSweepInterval: 0, handlerSweepInterval: 0 } });
   let ready = false, destroyed = 0; const destroy = client.destroy.bind(client);
-  const hooks: { login?: () => Promise<string> } = {};
+  const hooks: { login?: () => Promise<string>; delayedReady?: boolean } = {};
   Object.defineProperties(client, {
-    login: { value: async () => { const result = await (hooks.login?.() ?? Promise.resolve('synthetic')); ready = true; return result; } },
+    login: { value: async () => { const result = await (hooks.login?.() ?? Promise.resolve('synthetic')); if (!hooks.delayedReady) ready = true; return result; } },
     isReady: { value: () => ready }, destroy: { value: async () => { ready = false; destroyed++; await destroy(); } },
   });
-  return { client, hooks, destroyed: () => destroyed };
+  return { client, hooks, ready: () => { ready = true; client.emit(Events.ClientReady, client as Client<true>); }, destroyed: () => destroyed };
 }
 const errorIs = (code: string) => (error: unknown) => error instanceof OperationsError && error.code === code && !JSON.stringify(error).includes('synthetic');
 
@@ -110,6 +110,28 @@ test('foreground service starts one listener after ready, exposes safe status an
   assert.doesNotMatch(JSON.stringify(events), /synthetic|secret|personaname/);
   await Promise.all([service.stop(), service.stop()]); await service.done; assert.equal(fake.destroyed(), 1); assert.equal(fake.client.listenerCount(Events.InteractionCreate), 0);
   await assert.rejects(readStatus(fx.input), errorIs('not-ready'));
+});
+
+test('login can resolve before ClientReady without starting discovery or attaching commands early', async t => {
+  const fx = await fixture(t, { automatic: true }); await initService(fx.input.config);
+  const fake = fakeClient(), connected = deferred<void>(); let settled = false, calls = 0;
+  fake.hooks.delayedReady = true; fake.hooks.login = async () => { connected.resolve(); return 'synthetic'; };
+  const starting = startService(fx.input, { client: fake.client, fetcher: async () => { calls++; return Response.json([]); } });
+  void starting.then(() => { settled = true; }, () => { settled = true; });
+  await connected.promise; await flush();
+  assert.equal(settled, false); assert.equal(calls, 0); assert.equal(fake.client.listenerCount(Events.InteractionCreate), 0);
+  assert.equal((await readState(fx.input.config)).automaticSince, null);
+  fake.ready(); const service = await starting;
+  assert.equal(fake.client.listenerCount(Events.ClientReady), 0); assert.equal(fake.client.listenerCount(Events.InteractionCreate), 1);
+  assert.ok((await readState(fx.input.config)).automaticSince); await service.stop();
+});
+
+test('missing ClientReady after successful login times out and removes listener before a late ready event', async t => {
+  const fx = await fixture(t, { startupTimeoutMs: 20 }); await initService(fx.input.config); const fake = fakeClient(); let calls = 0;
+  fake.hooks.delayedReady = true;
+  await assert.rejects(startService(fx.input, { client: fake.client, fetcher: async () => { calls++; return Response.json([]); } }), errorIs('startup-timeout'));
+  assert.equal(fake.destroyed(), 1); assert.equal(fake.client.listenerCount(Events.ClientReady), 0);
+  fake.ready(); await flush(); assert.equal(calls, 0); assert.equal(fake.client.listenerCount(Events.InteractionCreate), 0);
 });
 
 test('login failure/timeout release resources without starting worker or exposing SDK error', async t => {

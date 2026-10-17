@@ -16,9 +16,9 @@ Windows x64, Node v22.14.0, SQLite 3.47.2, discord.js 14.27.0/REST 2.6.3. Node e
 | Проверка | Результат |
 |---|---|
 | npm.cmd run typecheck / build | успешно |
-| Новый operations runtime/config/CLI | 17 тестов: config, live opt-in, init/state/cutoff, backup/fault, ready/status, startup error/timeout, safe fatal/SQLite busy, grace/deadline/поздний ID, CLI fake REST и Linux signals |
+| Новый operations runtime/config/CLI | 19 тестов: config, live opt-in, init/state/cutoff, backup/fault, ready/status, отложенный/отсутствующий ClientReady, startup error/timeout, safe fatal/SQLite busy, grace/deadline/поздний ID, CLI fake REST и Linux signals |
 | Runtime artifact | 2 теста: allowlist, exact digest/revision, отказ плохому SHA и перезаписи |
-| Полный npm.cmd test с обычными локальными правами | 319 тестов: 313 pass, 6 Linux-only skip, 0 fail |
+| Полный npm.cmd test с обычными локальными правами | 321 тест: 315 pass, 6 Linux-only skip, 0 fail |
 | Bash syntax receive/control | проверка запускается локально с обычными правами и в Linux release job |
 | openspec.cmd validate add-operations --type change --strict --no-interactive | успешно |
 
@@ -48,9 +48,13 @@ SSH выделенным ключом успешно аутентифициру�
 
 Discord application/guild/channel проверены read-only API, токен не выводился. Runtime env и public JSON помещены вне release с root:worst-player 0640. От app-user явно выполнены check/init: создана новая БД/state (0600), автоматическая граница null. register-commands вернул complete для worst/worst-status/worst-reanalyze; сообщений не отправляли. Unit пока disabled/inactive, первый start ожидает доставку через Actions.
 
+Первый полный [CI/CD run](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39023653500) для `2e9e3e75127a0ecb23c7b580b4e51c8b36b50fa2`: checks/release успешны, deploy failed из-за startup-failed, unit после трёх ограниченных рестартов failed. Env передан без изменений, DB/state сохранены. На production выполнялись только штатная доставка и чтение unit/status/revision/log codes.
+
+Причина воспроизведена локальным подключением реального discord.js 14.27.0: после await login isReady=false, затем ClientReady и isReady=true. SDK Client.login ждёт ws.connect, а ClientReady приходит отдельно после готовности guilds/shards. Runtime теперь подписывается до login и ожидает готовность внутри общего startup timeout, удаляя listener при любом исходе. Два новых regression tests проверяют отсутствие discovery/команд/активации до ready и timeout/cleanup при отсутствующем ready. Полный локальный набор после исправления — 315 pass/6 skip из 321; исправленная production revision ещё ожидает CI/CD.
+
 ## Границы проверки
 
-Runtime действительно собирает публичные модули, но Client login и REST в тестах поддельные; реальный gateway/регистрация/сообщения и качество MiMo не проверены. Prepare-only/manual — defaults, live требует новых явных budgets/key/experimental. Лабораторный лимит не переносился.
+Unit/integration тесты используют fake Client/REST; реальное локальное Gateway подключение и регистрация команд на VPS подтверждены отдельно. Production ready после исправления ещё ожидается. Реальные сообщения и качество MiMo не проверялись. Prepare-only/manual — defaults, live требует новых явных budgets/key/experimental. Лабораторный лимит не переносился.
 
 Cold backup требует внешней остановки и общей Linux блокировки; API не доказывает отсутствие произвольных сторонних писателей. Manifest записывается последним, restore не выполняется автоматически. После старой копии нужна сверка внешних эффектов. Тесты shutdown не обещают сохранить ответ после принудительного завершения процесса.
 

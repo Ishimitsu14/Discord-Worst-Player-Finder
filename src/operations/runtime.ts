@@ -76,7 +76,11 @@ export async function startService(input: ServiceInput, deps: ServiceDependencie
   client.on(Events.Error, onError);
   try {
     storage = openStorage({ path: paths.db, clock: { now: () => clock.now() } }); await health('starting');
-    await bounded(client.login(secrets.discordToken), clock, config.startupTimeoutMs, 'startup-timeout', deps.signal);
+    let readyListener!: () => void;
+    const ready = new Promise<void>(resolve => { readyListener = () => resolve(); client.once(Events.ClientReady, readyListener); });
+    try {
+      await bounded((async () => { await client.login(secrets.discordToken); if (!client.isReady()) await ready; })(), clock, config.startupTimeoutMs, 'startup-timeout', deps.signal);
+    } finally { client.off(Events.ClientReady, readyListener); }
     ensure(client.isReady() && !stopped && !deps.signal?.aborted, 'startup-failed');
     const state = await activateService(config, clock.now());
     const adapter = deps.publisher ?? createDiscordPublisher({ botToken: secrets.discordToken }, { makeRequest: deps.makeRequest });
