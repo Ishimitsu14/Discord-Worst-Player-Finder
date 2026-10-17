@@ -79,6 +79,34 @@ test('Steam pipeline: cursor pagination, new-ID cap and known terminal IDs do no
   assert.equal(fx.steamCalls.filter(call => call.accountId === settings.steamAccountIds[1]).length, 4);
 });
 
+test('manual old ready match bypasses an unverified Steam candidate beyond the scan limit', async t => {
+  const fx = await steamFixture(t, { ...live, publicationMode: 'on-command', maxDiscoveryChecksPerScan: 1 });
+  for (const id of [100, 101]) { const row = data(id); row.start_time -= 100000; fx.matches.set(id, row); }
+  for (const account of settings.steamAccountIds) fx.histories.set(account, [100, 101]);
+  const scan = await fx.scan(); assert.equal(scan.checks, 1); assert.equal(scan.queued.length, 0); const before = fx.gets(), history = fx.steamCalls.length;
+  const requested = await drive(fx.pipeline.requestMatch({ matchId: 101 }), fx.clock); assert.ok('job' in requested); assert.equal(requested.job.origin, 'manual');
+  assert.equal(fx.gets(), before + 1); assert.equal(fx.steamCalls.length, history);
+  const worker = fx.pipe(fx.config, { steam: fx.steam, publisher: fx.publisher });
+  assert.equal((await fx.process(worker)).state, 'succeeded'); assert.equal(fx.posts('analysis').length, 1);
+  await fx.pipeline.requestMatch({ matchId: 101 }); assert.equal((await worker.processNext()).status, 'idle'); assert.equal(fx.posts('analysis').length, 1);
+  assert.equal(fx.storage.getLatestJob(100, 'radiant'), null);
+});
+
+test('first manual candidate check persists missing/incomplete/error outcomes and repeated commands respect cooldown', async t => {
+  for (const failure of ['missing', 'incomplete', 'rate-limited', 'invalid'] as const) {
+    const fx = await steamFixture(t, { maxDiscoveryChecksPerScan: 1 }); fx.matches.set(100, data(100));
+    for (const account of settings.steamAccountIds) fx.histories.set(account, [100, 101]); await fx.scan();
+    if (failure === 'missing') fx.matches.delete(101);
+    if (failure === 'incomplete') fx.matches.get(101)!.duration = 0;
+    if (failure === 'rate-limited') t.mock.method(fx.opendota, 'getMatch', async () => { throw new OpenDotaError('rate_limited', 'getMatch', { retryAt: fx.clock.now() + 180000 }); });
+    if (failure === 'invalid') fx.hooks.opendota = () => Response.json({ match_id: 'invalid' });
+    const first = await drive(fx.pipeline.requestMatch({ matchId: 101 }), fx.clock); assert.equal(first.status, 'awaiting-data', failure);
+    const before = fx.gets(), history = fx.steamCalls.length; fx.reopen(); const resumed = fx.pipe(fx.config, { steam: fx.steam });
+    const repeated = await drive(resumed.requestMatch({ matchId: 101 }), fx.clock); assert.equal(repeated.status, 'awaiting-data');
+    if (failure !== 'invalid') assert.equal(fx.gets(), before); assert.equal(fx.steamCalls.length, history); assert.equal(fx.posts('analysis').length, 0);
+  }
+});
+
 test('Steam pipeline: 404 persists outside recent pages and reopen, manual request reads pending without API', async t => {
   const fx = await steamFixture(t); fx.matches.delete(101);
   const report = await fx.scan(); assert.equal(report.pending, 1); assert.equal(report.checks, 1); assert.equal(fx.gets(), 1);

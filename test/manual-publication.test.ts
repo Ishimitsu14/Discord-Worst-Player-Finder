@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createDiscordPublisher } from '../src/discord-interface/index.js';
 import { validateConfig } from '../src/operations/index.js';
-import { StorageError } from '../src/storage/index.js';
+import { StorageError, openStorage } from '../src/storage/index.js';
 import { PublicationError } from '../src/match-pipeline/index.js';
-import { geminiFixture, live, settings } from './gemini-runtime-helpers.js';
+import { geminiFixture, live, settings, geminiStreamResponse, geminiEvents, geminiAnswerV2 } from './gemini-runtime-helpers.js';
 import { commands, interaction, http } from './discord-interface-helpers.js';
+import { intercepted } from './match-pipeline-helpers.js';
 
 const onCommand = { ...live, publicationMode: 'on-command' } as const;
 const automaticJob = (fx: Awaited<ReturnType<typeof geminiFixture>>) => fx.storage.enqueueInitial({ matchId: 101, side: 'radiant', origin: 'automatic', settings, analysisProfile: 'gemini' });
@@ -33,9 +34,9 @@ test('ready auto analysis is idle and its scoped publication intent survives dup
   const db = new DatabaseSync(fx.path, { readOnly: true }); assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 3); db.close();
 });
 
-test('worst before ready and status never grant publication; ready worst sends once and foreign scope stays private', async t => {
+test('status never grants publication; ready worst sends once and foreign scope stays private', async t => {
   const fx = await geminiFixture(t), pipe = fx.geminiPipe(onCommand), job = automaticJob(fx), ui = commands(fx, pipe);
-  const early = interaction(); await ui.handle(early); assert.match(early.content(), /только по твоей команде/); assert.equal(fx.storage.getJob(job.id).reason, null);
+  const queued = interaction({ name: 'worst-status', jobId: job.id }); await ui.handle(queued); assert.equal(fx.storage.getJob(job.id).publicationRequested, false);
   await fx.process(pipe); const before = fx.calls.length;
   const status = interaction({ name: 'worst-status', jobId: job.id }); await ui.handle(status);
   assert.match(status.content(), /готов и ждёт команды/); assert.match(status.content(), /Пост ещё не опубликован/);
@@ -47,6 +48,49 @@ test('worst before ready and status never grant publication; ready worst sends o
   assert.equal((await fx.process(pipe)).state, 'succeeded'); assert.equal(fx.sends(), 1);
   const again = interaction(); await ui.handle(again); assert.match(again.content(), /Открыть пост с разбором/);
   assert.equal((await pipe.processNext()).status, 'idle'); assert.equal(fx.posts('analysis').length, 1); assert.equal(fx.sends(), 1); await ui.ui.stop();
+});
+
+test('worst during inference preserves the active claim and publishes once after valid without a second command', async t => {
+  const fx = await geminiFixture(t), pipe = fx.geminiPipe(onCommand), job = automaticJob(fx), ui = commands(fx, pipe);
+  fx.controls.inference = async () => {
+    const before = fx.storage.getJob(job.id); assert.equal(before.state, 'running'); assert.equal(before.step, 'analyze');
+    const request = interaction(); await ui.handle(request); assert.match(request.content(), /сам скину.*Повторять команду не нужно/);
+    const current = fx.storage.getJob(job.id); assert.equal(current.publicationRequested, true); assert.equal(current.version, before.version); assert.equal(current.leaseToken, before.leaseToken);
+    assert.equal(fx.sends(), 0); assert.equal(fx.storage.listAttempts(job.id).some(row => row.kind === 'publication'), false);
+    const bundle = fx.storage.getJobArtifacts(job.id, 'gemini').bundle!;
+    return geminiStreamResponse(geminiEvents(bundle, { answer: geminiAnswerV2(bundle) }));
+  };
+  assert.equal((await fx.process(pipe)).state, 'succeeded'); assert.equal(fx.sends(), 1); assert.equal(fx.posts('analysis').length, 1);
+  await ui.handle(interaction()); assert.equal((await pipe.processNext()).status, 'idle'); assert.equal(fx.sends(), 1); await ui.ui.stop();
+});
+
+test('queued intent is idempotent, scoped and survives checkpoint, ordinary defer and reopen', async t => {
+  const fx = await geminiFixture(t), job = automaticJob(fx), intent = { jobId: job.id, guildId: settings.guildId, channelId: settings.channelId };
+  for (const channelId of ['123', '456']) assert.throws(() => fx.storage.requestPublication({ ...intent, channelId }));
+  assert.equal(fx.storage.getJob(job.id).publicationRequested, false);
+  const queued = fx.storage.requestPublication(intent); assert.equal(queued.version, job.version); assert.equal(queued.publicationRequested, true);
+  assert.equal(fx.storage.requestPublication(intent).version, job.version);
+  const claim = fx.storage.claimNext()!, saved = fx.storage.checkpoint(claim.claim, { step: 'load-match' });
+  const delayed = fx.storage.defer(saved.claim, { reason: 'opendota-rate-limited', nextRunAt: fx.clock.now() + 60000 }); assert.equal(delayed.publicationRequested, true);
+  fx.reopen(); assert.equal(fx.storage.getJob(job.id).publicationRequested, true); await fx.clock.tick(60001);
+  const pipe = fx.geminiPipe(onCommand); assert.equal((await fx.process(pipe)).state, 'succeeded'); assert.equal(fx.sends(), 1); assert.equal(fx.posts('analysis').length, 1);
+});
+
+test('concurrent intent between worker gate and ready defer cannot lose its wakeup', async t => {
+  const fx = await geminiFixture(t), job = automaticJob(fx), other = openStorage({ path: fx.path, clock: { now: fx.clock.now } });
+  try {
+    let requested = false;
+    const storage = intercepted(fx.storage, { defer: (claim: Parameters<typeof fx.storage.defer>[0], input: Parameters<typeof fx.storage.defer>[1]) => {
+      if (input.reason === 'publication-ready') {
+        requested = true; const before = fx.storage.getJob(job.id);
+        const granted = other.requestPublication({ jobId: job.id, guildId: settings.guildId, channelId: settings.channelId }); assert.equal(granted.version, before.version);
+      }
+      return fx.storage.defer(claim, input);
+    } });
+    const pipe = fx.geminiPipe(onCommand, { storage }), waiting = await fx.process(pipe);
+    assert.equal(requested, true); assert.equal(waiting.reason, 'publication-requested'); assert.ok(waiting.nextRunAt <= fx.clock.now());
+    assert.equal((await fx.process(pipe)).state, 'succeeded'); assert.equal(fx.sends(), 1); assert.equal(fx.posts('analysis').length, 1);
+  } finally { other.close(); }
 });
 
 test('on-command never retries an unknown Discord outcome or regenerates its saved result', async t => {

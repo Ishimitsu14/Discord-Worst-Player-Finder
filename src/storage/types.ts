@@ -26,7 +26,7 @@ export interface Job {
   analysisProfile: AnalysisProfile;
   id: string; matchId: number; side: Side; revision: number; origin: 'manual' | 'automatic'; settings: GroupSettings;
   state: JobState; step: Step; version: number; createdAt: number; updatedAt: number; nextRunAt: number;
-  leaseToken: string | null; leaseUntil: number | null; reason: string | null; refs: ArtifactRefs; resultAttemptId: string | null;
+  leaseToken: string | null; leaseUntil: number | null; reason: string | null; publicationRequested: boolean; refs: ArtifactRefs; resultAttemptId: string | null;
 }
 export interface Claim { jobId: string; token: string; version: number }
 export interface ClaimedJob { job: Job; claim: Claim }

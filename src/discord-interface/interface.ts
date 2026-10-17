@@ -77,7 +77,7 @@ class Interface implements DiscordInterface {
   }
   private status(job: Job, attention = false, billingUnknown = false, reservedCostUsd = 0, publicationMode = 'automatic'): string {
     const match = `матча #${job.matchId}`;
-    const onCommand = publicationMode === 'on-command' && job.origin === 'automatic';
+    const onCommand = publicationMode === 'on-command' && job.origin === 'automatic' && !job.publicationRequested;
     const states: Record<Job['state'], string> = {
       queued: `⏳ **Матч #${job.matchId} в очереди на разбор.**\nПосмотрю, кто где насрал, и соберу разбор.${onCommand ? ' Сохраню его, а в канал скину только по твоей команде.' : ' Когда будет готово — скину сюда.'}`,
       running: `🔎 **Разбираю матч #${job.matchId}.**\n${steps[job.step]}`,
@@ -95,6 +95,7 @@ class Interface implements DiscordInterface {
     if (billingUnknown) lines.push('Стоимость запроса неизвестна.');
     if (reservedCostUsd > 0) lines.push(`Резерв бюджета: $${reservedCostUsd.toFixed(6)}; это не подтверждённое списание.`);
     if (onCommand && !ready && !requested && ['queued', 'running', 'waiting'].includes(job.state)) lines.push('Когда разбор будет готов, повтори команду, чтобы выложить его в канал.');
+    if (job.origin === 'automatic' && job.publicationRequested && !ready && !requested && ['queued', 'running', 'waiting'].includes(job.state)) lines.push('Когда разбор будет готов — сам скину его сюда. Повторять команду не нужно.');
     lines.push(`\n${ready ? 'Опубликовать в этом канале' : 'Проверить состояние можно той же командой'}: \`/worst match_id:${job.matchId} side:${job.side}\`.`,
       `Служебный номер: ||${job.id}||${job.revision > 1 ? ` · повторный разбор №${job.revision}` : ''}`);
     return lines.join('\n');

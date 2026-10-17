@@ -2,7 +2,7 @@
 
 Локальная SQLite-БД, Node.js >=22.14.0. `node:sqlite` на минимальной версии экспериментален; npm-зависимости не добавлены. Импорт не открывает БД и не читает окружение.
 
-`requestPublication({jobId, guildId, channelId})` — атомарный допуск готового авторазбора: проверяет сохранённую цель, valid-попытку и отсутствие publication receipt. Только waiting/publication-ready переходит в publication-requested с nextRunAt=now; остальные состояния возвращаются без изменения. Повтор не меняет версию, чужая цель даёт conflict. Claim/checkpoint сохраняют reason; intent переживает reopen. Схема остаётся 3, данные и расходы не сбрасываются.
+`requestPublication({jobId, guildId, channelId})` атомарно проверяет сохранённую цель и записывает намерение для queued/running/waiting в неизменяемый publication-request артефакт. `Job.publicationRequested` отражает его наличие; старый reason=publication-requested читается совместимо. У running не меняются версия и lease, поэтому команда не прерывает анализ. Checkpoint, обычные defer и reopen сохраняют намерение. Готовое waiting/publication-ready дополнительно проверяет valid-попытку и просыпается с nextRunAt=now; defer закрывает гонку записи намерения и готовности. Needs-attention/терминальные задачи и уже допущенная отправка не возобновляются. Повтор идемпотентен, чужая цель даёт conflict. Схема остаётся 3, данные и расходы не сбрасываются.
 
 ```ts
 import { openStorage } from './index.js';

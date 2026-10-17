@@ -77,29 +77,43 @@ class Pipeline implements MatchPipeline {
     }
     this.jobEvent(job); return { status: previous ? 'existing' : 'queued', job, result: this.db(() => this.deps.storage.getLatestResult(matchId, side)) };
   }
+  private existingRequest(matchId: number, side?: Side): MatchRequestResult | null {
+    if (side) return this.db(() => this.deps.storage.getLatestJob(matchId, side)) ? this.enqueue(matchId, side, 'manual') : null;
+    const existing = (['radiant', 'dire'] as const).filter(side => this.db(() => this.deps.storage.getLatestJob(matchId, side)));
+    if (existing.length > 1) return { status: 'requires-side', matchId, code: 'ambiguous-side' };
+    return existing.length === 1 ? this.enqueue(matchId, existing[0], 'manual') : null;
+  }
   requestMatch(input: { matchId: number; side?: Side }, options: RequestOptions = {}): Promise<MatchRequestResult> {
     return this.track(async () => {
       this.readOptions(options); this.check(options.signal); this.requestInput(input); const signal = this.signal(options.signal);
-      if (input.side && this.db(() => this.deps.storage.getLatestJob(input.matchId, input.side!))) return this.enqueue(input.matchId, input.side, 'manual');
-      if (!input.side) {
-        const existing = (['radiant', 'dire'] as const).filter(side => this.db(() => this.deps.storage.getLatestJob(input.matchId, side)));
-        if (existing.length > 1) return { status: 'requires-side', matchId: input.matchId, code: 'ambiguous-side' };
-        if (existing.length === 1) return this.enqueue(input.matchId, existing[0], 'manual');
-      }
+      const existing = this.existingRequest(input.matchId, input.side); if (existing) return existing;
       let candidate = this.config.historySource === 'steam' && this.config.automaticSince !== undefined
         ? this.db(() => this.deps.storage.getDiscoveryCandidate(this.discoveryContext(), input.matchId)) : null;
       if (candidate?.state === 'pending') {
-        if (candidate.expiresAt > this.clock.now()) return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'opendota-pending', nextCheckAt: candidate.nextCheckAt };
-        candidate = this.decide(candidate, 'needs-attention', 'discovery-timeout');
+        if (candidate.expiresAt <= this.clock.now()) candidate = this.decide(candidate, 'needs-attention', 'discovery-timeout');
+        else if (candidate.reason !== null) return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason, nextCheckAt: candidate.nextCheckAt };
       }
       let snapshot: MatchSnapshot;
       try { snapshot = await this.deps.opendota.getMatch(input.matchId, { fresh: true, signal }); }
-      catch {
+      catch (error) {
         this.check(signal);
+        const existing = this.existingRequest(input.matchId, input.side); if (existing) return existing;
+        if (candidate) candidate = this.db(() => this.deps.storage.getDiscoveryCandidate(this.discoveryContext(), input.matchId));
+        if (candidate?.state === 'pending') {
+          const retry = error instanceof OpenDotaError && (error.code === 'not_found' || transient.has(error.code));
+          candidate = this.decide(candidate, retry ? 'pending' : 'needs-attention', this.readCode(error).replaceAll('_', '-'), error instanceof OpenDotaError ? error.retryAt ?? 0 : 0);
+          return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason!, nextCheckAt: candidate.nextCheckAt };
+        }
         if (candidate?.state === 'needs-attention') return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'discovery-stopped', nextCheckAt: null };
         throw new PipelineError('opendota-failure');
       }
-      this.check(signal); const result = classify(snapshot.data, this.deps.settings, 'manual', input.side);
+      this.check(signal); const concurrent = this.existingRequest(input.matchId, input.side); if (concurrent) return concurrent;
+      if (candidate) candidate = this.db(() => this.deps.storage.getDiscoveryCandidate(this.discoveryContext(), input.matchId));
+      const result = classify(snapshot.data, this.deps.settings, 'manual', input.side);
+      if (candidate?.state === 'pending' && (!endAt(snapshot.data, this.clock.now()) || snapshot.data.radiant_win === null || result.status === 'rejected' && result.code === 'incomplete-allies')) {
+        candidate = this.decide(candidate, 'pending', 'opendota-pending');
+        return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason!, nextCheckAt: candidate.nextCheckAt };
+      }
       if (candidate?.state === 'needs-attention' && (!endAt(snapshot.data, this.clock.now()) || snapshot.data.radiant_win === null || result.status === 'rejected' && result.code === 'incomplete-allies')) {
         return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'discovery-stopped', nextCheckAt: null };
       }
@@ -462,7 +476,7 @@ class Pipeline implements MatchPipeline {
   private async publish(ctx: Execution, artifacts: JobArtifacts, analysis: RuntimeAttempt): Promise<Job> {
     const previous = this.attempts(ctx).find(item => item.kind === 'publication' && !item.released);
     if (previous) return this.finish(ctx, previous.unresolved ? 'needs-attention' : 'failed', 'publication-failed');
-    if (this.config.publicationMode === 'on-command' && ctx.job.origin === 'automatic' && ctx.job.reason !== 'publication-requested') {
+    if (this.config.publicationMode === 'on-command' && ctx.job.origin === 'automatic' && !this.db(() => this.deps.storage.getJob(ctx.job.id)).publicationRequested) {
       this.owned(ctx); return this.db(() => this.deps.storage.defer(ctx.claim, { nextRunAt: Number.MAX_SAFE_INTEGER, reason: 'publication-ready' }));
     }
     if (this.config.mode !== 'live' || !this.deps.publisher) return this.defer(ctx, 'publisher-unavailable');

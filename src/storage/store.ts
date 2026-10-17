@@ -45,12 +45,16 @@ export class Storage {
     ensure(row.version === 1 && row.kind === kind && typeof row.body === 'string' && hash(row.body) === row.digest && ref === `${kind}:${row.digest}`, 'integrity-error');
     try { const value = JSON.parse(row.body); ensure(object(value), 'integrity-error'); return value as T; } catch { throw new StorageError('integrity-error', 'artifact'); }
   }
+  private publicationIntent(jobId: string, guildId: string, channelId: string): string { return canonical({ version: 1, jobId, guildId, channelId }); }
   private job(row: Row | undefined): Job {
     ensure(row, 'not-found'); const config = this.verify(() => { const value = JSON.parse(row.settings as string); settings(value); return value; }); ensure(digest(config) === row.settings_digest, 'integrity-error');
+    const intentRef = `publication-request:${hash(this.publicationIntent(row.id as string, config.guildId, config.channelId))}`;
+    const requested = Boolean(this.get('SELECT ref FROM artifacts WHERE ref=?', intentRef));
+    if (requested) this.artifact(intentRef, 'publication-request');
     return { id: row.id as string, matchId: row.match_id as number, side: row.side as Side, revision: row.revision as number, origin: row.origin as Job['origin'],
       analysisProfile: row.analysis_profile as Job['analysisProfile'], settings: config, state: row.state as Job['state'], step: row.step as Step, version: row.version as number, createdAt: row.created_at as number,
       updatedAt: row.updated_at as number, nextRunAt: row.next_run_at as number, leaseToken: row.lease_token as string | null,
-      leaseUntil: row.lease_until as number | null, reason: row.reason as string | null, resultAttemptId: row.result_attempt_id as string | null,
+      leaseUntil: row.lease_until as number | null, reason: row.reason as string | null, publicationRequested: requested || row.reason === 'publication-requested', resultAttemptId: row.result_attempt_id as string | null,
       refs: { snapshot: row.snapshot_ref as string | null, bundle: row.bundle_ref as string | null, prepared: row.prepared_ref as string | null } };
   }
   private findJob(jobId: string): Job { ensure(id(jobId)); return this.job(this.get('SELECT * FROM jobs WHERE id=?', jobId)); }
@@ -169,13 +173,17 @@ export class Storage {
       return this.tx(() => {
         const job = this.findJob(input.jobId);
         ensure(job.settings.guildId === input.guildId && job.settings.channelId === input.channelId, 'conflict');
-        if (job.state !== 'waiting' || job.reason !== 'publication-ready') return job;
-        ensure(job.step === 'publish' && job.resultAttemptId, 'conflict');
-        const result = this.receipt(job.resultAttemptId);
-        ensure(result.jobId === job.id && result.kind === 'analysis' && !result.released && !result.unresolved && result.state === 'finished'
-          && (result.outcome as { status?: string })?.status === 'valid', 'conflict');
-        ensure(!this.get("SELECT id FROM external_attempts WHERE job_id=? AND kind='publication'", job.id), 'conflict');
-        return this.update(job, { nextRunAt: this.now(), reason: 'publication-requested' });
+        if (!['queued', 'running', 'waiting'].includes(job.state) || this.get("SELECT id FROM external_attempts WHERE job_id=? AND kind='publication'", job.id)) return job;
+        const ready = job.state === 'waiting' && job.reason === 'publication-ready';
+        if (ready) {
+          ensure(job.step === 'publish' && job.resultAttemptId, 'conflict');
+          const result = this.receipt(job.resultAttemptId);
+          ensure(result.jobId === job.id && result.kind === 'analysis' && !result.released && !result.unresolved && result.state === 'finished'
+            && (result.outcome as { status?: string })?.status === 'valid', 'conflict');
+        }
+        this.put('publication-request', this.publicationIntent(job.id, input.guildId, input.channelId));
+        const requested = this.findJob(job.id);
+        return ready ? this.update(requested, { nextRunAt: this.now(), reason: 'publication-requested' }) : requested;
       });
     });
   }
@@ -204,7 +212,9 @@ export class Storage {
   }
   defer(claim: Claim, input: { nextRunAt: number; reason: string }): Job {
     return this.run('defer', () => { keys(input, ['nextRunAt', 'reason']); ensure(integer(input.nextRunAt) && shortText(input.reason)); return this.tx(() => {
-      const job = this.owned(claim); ensure(!this.hasUnresolved(job.id) && !this.get("SELECT id FROM external_attempts WHERE job_id=? AND state='prepared'", job.id), 'conflict'); return this.update(job, { state: 'waiting', nextRunAt: input.nextRunAt, reason: input.reason, leaseToken: null, leaseUntil: null });
+      const job = this.owned(claim); ensure(!this.hasUnresolved(job.id) && !this.get("SELECT id FROM external_attempts WHERE job_id=? AND state='prepared'", job.id), 'conflict');
+      const requested = input.reason === 'publication-ready' && job.publicationRequested;
+      return this.update(job, { state: 'waiting', nextRunAt: requested ? this.now() : input.nextRunAt, reason: requested ? 'publication-requested' : input.reason, leaseToken: null, leaseUntil: null });
     }); });
   }
   finish(claim: Claim, input: { state: 'succeeded' | 'failed' | 'needs-attention'; reason?: string }): Job {
