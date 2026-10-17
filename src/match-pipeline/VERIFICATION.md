@@ -4,7 +4,7 @@
 
 Один /worst для queued/running auto-задачи сохраняет scoped намерение отдельным immutable artifact на схеме 3 без изменения версии/lease. Checkpoint, defer и reopen сохраняют его; worker читает актуальное намерение перед публикацией, а атомарный defer закрывает потерянное пробуждение. Needs-attention/неизвестная доставка не возобновляются. Fake inference с настоящим Discord-интерфейсом подтвердил одну команду во время анализа и один пост после valid без новой генерации. Второе соединение SQLite проверило гонку записи между gate и defer. /worst-status и чужая цель не разрешают отправку.
 
-Windows / Node.js 22.14.0: build/typecheck успешны; focused manual-publication/Steam — 24/24; полный набор — 500, 494 pass/6 Linux-only skip/0 fail. Новых реальных генераций/сообщений не запускалось. CI/артефакт/production текущего исправления ещё не проверены; ниже — исторические протоколы прежнего SHA.
+Windows / Node.js 22.14.0: build/typecheck успешны; focused manual-publication/Steam — 25/25; полный набор — 501, 495 pass/6 Linux-only skip/0 fail. Новых реальных генераций/сообщений не запускалось. CI/артефакт/production текущего исправления ещё не проверены; ниже — исторические протоколы прежнего SHA.
 
 ## Production: авторазбор новых матчей — 18 октября 2026
 

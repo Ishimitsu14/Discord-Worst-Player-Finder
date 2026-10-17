@@ -93,18 +93,26 @@ test('manual old ready match bypasses an unverified Steam candidate beyond the s
 });
 
 test('first manual candidate check persists missing/incomplete/error outcomes and repeated commands respect cooldown', async t => {
-  for (const failure of ['missing', 'incomplete', 'rate-limited', 'invalid'] as const) {
+  for (const failure of ['missing', 'incomplete', 'rate-limited'] as const) {
     const fx = await steamFixture(t, { maxDiscoveryChecksPerScan: 1 }); fx.matches.set(100, data(100));
     for (const account of settings.steamAccountIds) fx.histories.set(account, [100, 101]); await fx.scan();
     if (failure === 'missing') fx.matches.delete(101);
     if (failure === 'incomplete') fx.matches.get(101)!.duration = 0;
     if (failure === 'rate-limited') t.mock.method(fx.opendota, 'getMatch', async () => { throw new OpenDotaError('rate_limited', 'getMatch', { retryAt: fx.clock.now() + 180000 }); });
-    if (failure === 'invalid') fx.hooks.opendota = () => Response.json({ match_id: 'invalid' });
     const first = await drive(fx.pipeline.requestMatch({ matchId: 101 }), fx.clock); assert.equal(first.status, 'awaiting-data', failure);
     const before = fx.gets(), history = fx.steamCalls.length; fx.reopen(); const resumed = fx.pipe(fx.config, { steam: fx.steam });
     const repeated = await drive(resumed.requestMatch({ matchId: 101 }), fx.clock); assert.equal(repeated.status, 'awaiting-data');
-    if (failure !== 'invalid') assert.equal(fx.gets(), before); assert.equal(fx.steamCalls.length, history); assert.equal(fx.posts('analysis').length, 0);
+    assert.equal(fx.gets(), before); assert.equal(fx.steamCalls.length, history); assert.equal(fx.posts('analysis').length, 0);
   }
+});
+
+test('failed first manual lookup cannot terminate a concurrent successful automatic confirmation', async t => {
+  const fx = await steamFixture(t), gate = deferred<Response>(); fx.hooks.opendota = () => gate.promise;
+  const scanning = fx.pipeline.discoverOnce(); await flush();
+  const fault = t.mock.method(fx.opendota, 'getMatch', async () => { throw new OpenDotaError('invalid_response', 'getMatch'); });
+  await assert.rejects(fx.pipeline.requestMatch({ matchId: 101 }), pipelineError('opendota-failure')); fault.mock.restore();
+  gate.resolve(Response.json(data())); const scan = await drive(scanning, fx.clock); assert.equal(scan.queued.length, 1);
+  assert.equal(fx.storage.getLatestJob(101, 'radiant')!.revision, 1); assert.equal(fx.posts('analysis').length, 0);
 });
 
 test('Steam pipeline: 404 persists outside recent pages and reopen, manual request reads pending without API', async t => {
@@ -156,7 +164,7 @@ test('Steam pipeline: malformed permanent response stops, transient respects ret
 });
 
 test('Steam pipeline: manual/automatic race and crash after enqueue reuse one job and valid result', async t => {
-  const fx = await steamFixture(t), gate = deferred<Response>(); fx.hooks.opendota = () => gate.promise;
+  const fx = await steamFixture(t), gate = deferred<Response>(); fx.hooks.opendota = async () => (await gate.promise).clone();
   const scanning = fx.pipeline.discoverOnce(); await flush();
   const manual = fx.pipeline.requestMatch({ matchId: 101, side: 'radiant' }); await flush();
   gate.resolve(Response.json(data())); const result = await drive(scanning, fx.clock), requested = await drive(manual, fx.clock);

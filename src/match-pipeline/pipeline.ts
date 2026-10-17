@@ -101,7 +101,8 @@ class Pipeline implements MatchPipeline {
         if (candidate) candidate = this.db(() => this.deps.storage.getDiscoveryCandidate(this.discoveryContext(), input.matchId));
         if (candidate?.state === 'pending') {
           const retry = error instanceof OpenDotaError && (error.code === 'not_found' || transient.has(error.code));
-          candidate = this.decide(candidate, retry ? 'pending' : 'needs-attention', this.readCode(error).replaceAll('_', '-'), error instanceof OpenDotaError ? error.retryAt ?? 0 : 0);
+          if (!retry) throw new PipelineError('opendota-failure');
+          candidate = this.decide(candidate, 'pending', this.readCode(error).replaceAll('_', '-'), error instanceof OpenDotaError ? error.retryAt ?? 0 : 0);
           return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason!, nextCheckAt: candidate.nextCheckAt };
         }
         if (candidate?.state === 'needs-attention') return { status: 'awaiting-data', matchId: input.matchId, code: candidate.reason ?? 'discovery-stopped', nextCheckAt: null };
