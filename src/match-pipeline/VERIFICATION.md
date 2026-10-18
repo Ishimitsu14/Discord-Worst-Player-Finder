@@ -1,3 +1,13 @@
+## Единственный повтор парсинга — production 18 октября 2026
+
+Код `7a6d519a18775b58a8f834885657e9d34bb1df16` доставлен штатным автодеплоем из main: [PR №4](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/pull/4), [main CI/CD 39135755148](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39135755148). Все три проверки, release с production install/check и deploy успешны. Ubuntu / Node 22.14.0 и 22.23.3 — 511/511; Windows / Node 22.14.0 — 505 pass/6 Linux-only skip/0 fail. Перед main тот же код прошёл [PR CI 39134921903](https://github.com/Ishimitsu14/Discord-Worst-Player-Finder/actions/runs/39134921903).
+
+Скачанный runtime-архив содержит 129 записей, SHA256 `e04ef399f82862de555ccb030cb80f23b69043879bc3392bf8be63ba9a6c10e2`. REVISION и архивный digest совпали с VPS; скомпилированные pipeline/storage побайтно совпали с проверенной локальной сборкой и файлами работающего релиза. Состав архива и версии обоих семейств prompt-пакетов/словарей проверены отдельно.
+
+Read-only проверка VPS в `2026-10-18T14:32:23Z`: revision `7a6d519`, unit active/enabled, phase ready, Discord Gateway ready. Схема 3 и `PRAGMA quick_check=ok`; 13 jobs, 195 artifacts, 29 external attempts, незавершённых внешних исходов нет. Хеши config/group/env/operations-state/receiver и automaticSince=1792270545647 совпали с исходным снимком. Сохранены Gemini/Steam/live/automatic/on-command. Штатный receiver создал cold backup `20261018T143139-30469` (manifest createdAt `2026-10-18T14:31:43.436Z`): контрольные суммы обоих файлов, схема 3, quick_check и прежнее состояние подтверждены. Рабочая БД читалась через mode=ro.
+
+Это проверка доставки и готовности; новый реальный матч с повторным POST, платный анализ и сообщение Discord этим релизом не запускались. Ниже сохранён локальный протокол до доставки.
+
 ## Единственный повтор парсинга — локальная проверка 18 октября 2026
 
 В live после первого принятого запроса разбора через 120000 мс выполняется fresh GET: parsed продолжает подготовку фактов, basic разрешает ровно один повторный POST. Опрос не откладывает эту границу на полный parsePollMs. replay_url не является условием. Каждый POST имеет отдельный сохранённый started; повтор содержит исходные attemptId/createdAt первой попытки. Перезапуск и противоположная сторона не создают третий допуск и не продлевают общий parseTimeoutMs (по умолчанию 15 минут от первой попытки). Неизвестный исход требует внимания; однозначный отказ второго POST завершает задачу без новой отправки.
