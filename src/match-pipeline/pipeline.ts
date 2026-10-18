@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { analyzeMatch, analyzeGeminiMatch, checkGeminiRecovery, prepareAnalysis, prepareGeminiAnalysis, geminiRecoveryEligible, isGeminiAttempt, AnalysisError, type RuntimeAttempt } from '../match-analysis/index.js';
 import { FactsError, prepareMatchFacts, prepareCompactMatchFacts } from '../match-facts/index.js';
 import { OpenDotaError, type MatchSnapshot, type OpenDotaErrorSummary, type PlayerMatch } from '../opendota/index.js';
-import { StorageError, type Claim, type DiscoveryCandidate, type Inputs, type JobArtifacts, type Receipt, type PublicationOutcome } from '../storage/index.js';
+import { StorageError, type Claim, type DiscoveryCandidate, type Inputs, type JobArtifacts, type Receipt, type PublicationOutcome, type ParseInput, type ParseOutcome } from '../storage/index.js';
 import { SteamHistoryError } from '../steam/index.js';
 import { classify, endAt, supported } from './classify.js';
 import { configure, ensure, fields, id, integer, object, snowflake } from './config.js';
@@ -371,20 +371,29 @@ class Pipeline implements MatchPipeline {
     return JSON.stringify(essential(first)) === JSON.stringify(essential(fresh));
   }
   private async waitParse(ctx: Execution): Promise<Job> {
-    const own = this.attempts(ctx).filter(item => item.kind === 'parse' && (!item.released || item.outcome && 'jobId' in item.outcome));
+    const own = this.attempts(ctx).filter(item => item.kind === 'parse' && ((item.input as ParseInput).retryOf || !item.released || item.outcome && 'jobId' in item.outcome));
     const other = this.db(() => this.deps.storage.getLatestJob(ctx.job.matchId, ctx.job.side === 'radiant' ? 'dire' : 'radiant'));
-    const shared = other ? this.db(() => this.deps.storage.listAttempts(other.id)).filter(item => item.kind === 'parse' && (!item.released && item.unresolved || item.outcome && 'jobId' in item.outcome)) : [];
-    const receipt = own.find(item => item.outcome && 'jobId' in item.outcome) ?? shared[0];
+    const shared = other ? this.db(() => this.deps.storage.listAttempts(other.id)).filter(item => item.kind === 'parse' && ((item.input as ParseInput).retryOf || !item.released && item.unresolved || item.outcome && 'jobId' in item.outcome)) : [];
+    const retry = [...own, ...shared].find(item => (item.input as ParseInput).retryOf);
+    const receipt = retry ?? own.find(item => item.outcome && 'jobId' in item.outcome) ?? shared[0];
     if (receipt) {
-      if (this.clock.now() >= receipt.createdAt + this.config.parseTimeoutMs) return this.finish(ctx, 'failed', 'parse-timeout');
-      if (receipt.outcome && 'jobId' in receipt.outcome) {
-        this.guard(ctx); await this.deps.opendota.getParseJob(receipt.outcome.jobId, { signal: ctx.controller.signal }); this.guard(ctx);
-        return this.defer(ctx, 'parse-pending', this.config.parsePollMs);
+      const parseOutcome = receipt.outcome as ParseOutcome | null;
+      const firstCreatedAt = (receipt.input as ParseInput).retryOf?.createdAt ?? receipt.createdAt;
+      if (this.clock.now() >= firstCreatedAt + this.config.parseTimeoutMs) return this.finish(ctx, 'failed', 'parse-timeout');
+      if (parseOutcome && 'jobId' in parseOutcome) {
+        const canRetry = !retry && !receipt.released && !receipt.unresolved && this.config.mode === 'live';
+        if (canRetry && this.clock.now() - firstCreatedAt >= 120000) return this.startParse(ctx, receipt.id);
+        this.guard(ctx); await this.deps.opendota.getParseJob(parseOutcome.jobId, { signal: ctx.controller.signal }); this.guard(ctx);
+        return this.defer(ctx, 'parse-pending', canRetry ? Math.min(this.config.parsePollMs, Math.max(0, firstCreatedAt + 120000 - this.clock.now())) : this.config.parsePollMs);
       }
+      if (retry && parseOutcome && 'error' in parseOutcome && !parseOutcome.error.requestMayHaveSucceeded) return this.finish(ctx, 'failed', 'parse-request-failed');
       return this.defer(ctx, 'shared-parse-unknown', this.config.parsePollMs);
     }
     if (this.config.mode !== 'live') return this.defer(ctx, 'parse-disabled');
-    this.guard(ctx); const admission = this.db(() => this.deps.storage.beginParse(ctx.claim, { attemptId: randomUUID() }));
+    return this.startParse(ctx);
+  }
+  private async startParse(ctx: Execution, retryOf?: string): Promise<Job> {
+    this.guard(ctx); const admission = this.db(() => this.deps.storage.beginParse(ctx.claim, { attemptId: randomUUID(), ...(retryOf ? { retryOf } : {}) }));
     try {
       this.guard(ctx); const parsed = await this.deps.opendota.requestParse(ctx.job.matchId, { signal: ctx.controller.signal });
       this.db(() => this.deps.storage.saveParseOutcome(admission.id, { jobId: parsed.jobId }));
@@ -395,7 +404,7 @@ class Pipeline implements MatchPipeline {
       this.db(() => this.deps.storage.saveParseOutcome(admission.id, { error: summary }));
       this.owned(ctx); return this.finish(ctx, summary.requestMayHaveSucceeded ? 'needs-attention' : 'failed', 'parse-request-failed');
     }
-    this.guard(ctx); return this.defer(ctx, 'parse-pending', this.config.parsePollMs);
+    this.guard(ctx); return this.defer(ctx, 'parse-pending', retryOf ? this.config.parsePollMs : Math.min(this.config.parsePollMs, Math.max(0, admission.createdAt + 120000 - this.clock.now())));
   }
   private budget(): { limit: number; reason: null } | { limit: 0; reason: string } {
     const billing = this.db(() => this.deps.storage.getBillingSummary());

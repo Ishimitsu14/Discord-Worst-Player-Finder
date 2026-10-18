@@ -23,7 +23,7 @@ test('prepare-only basic stores snapshot without admission; parsed stores facts/
   assert.equal(fx.posts('analysis').length + fx.posts('parse').length, 0);
 });
 
-test('basic parse is admitted once, job ID persists before waiting; missing job does not mean parsed or permit another POST', async t => {
+test('basic parse is admitted once before two minutes; job ID persists and missing job does not mean parsed', async t => {
   const fx = await fixture(t); fx.matches.set(101, data(101, false)); const pipeline = fx.pipe(live);
   const job = await fx.request(pipeline);
   fx.hooks.opendota = (_url, init) => { if (init.method === 'POST') { const receipts = fx.storage.listAttempts(job.id); assert.equal(receipts.length, 1); assert.equal(receipts[0].state, 'started'); } return undefined; };
@@ -58,6 +58,7 @@ test('unknown parse is not retried; other side only checks fresh and can use lat
   const first = await fx.request(pipeline); fx.hooks.opendota = (_url, init) => { if (init.method === 'POST') throw new Error('private API response'); return undefined; };
   assert.equal((await fx.process(pipeline)).state, 'needs-attention');
   const second = await fx.request(pipeline, 101, 'dire'); let waiting = await fx.process(pipeline); assert.equal(waiting.reason, 'shared-parse-unknown'); assert.equal(fx.posts('parse').length, 1);
+  await fx.clock.tick(120000); assert.equal((await fx.process(pipeline)).reason, 'shared-parse-unknown'); assert.equal(fx.posts('parse').length, 1);
   fx.matches.set(101, data()); await fx.clock.tick(15000); waiting = await fx.process(pipeline);
   assert.equal(waiting.id, second.id); assert.equal(waiting.reason, 'publisher-unavailable'); assert.equal(fx.storage.listAttempts(first.id)[0].unresolved, true);
   assert.equal(fx.posts('parse').length, 1); assert.equal(fx.posts('analysis').length, 1);

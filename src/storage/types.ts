@@ -39,7 +39,7 @@ export interface RevisionInput { requestId: string; matchId: number; side: Side;
 export type ParseOutcome = { jobId: string } | { error: OpenDotaErrorSummary };
 export type PublicationOutcome = { messageId: string } | { state: 'not-sent' | 'unknown'; code: string };
 export type AttemptKind = 'parse' | 'analysis' | 'publication';
-export interface ParseInput { version: 1; matchId: number }
+export interface ParseInput { version: 1; matchId: number; retryOf?: { attemptId: string; createdAt: number } }
 export interface PublicationInput { version: 1; guildId: string; channelId: string; analysisAttemptId: string; message: string }
 export interface ResolutionInput {
   resolutionId: string; jobId: string; expectedVersion: number; attemptId: string; decision: 'allow-new-attempt' | 'accept-outcome';

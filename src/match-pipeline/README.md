@@ -77,7 +77,7 @@ DiscoveryReport дополняется pending (все ожидающие), defe
 | Шаг | Подтверждение |
 |---|---|
 | load-match | fresh GET, пригодность по настройкам задачи, snapshot |
-| wait-parse | fresh GET, один beginParse до POST, job ID до ожидания |
+| wait-parse | fresh GET, beginParse до каждого из максимум двух POST, job ID до ожидания |
 | build-facts | публичные prepareMatchFacts/prepareAnalysis, атомарное сохранение bundle/prepared |
 | analyze | reservation, beforeSend/startAnalysis до POST, final до checkpoint |
 | publish | принятый valid, точное сообщение до send, message ID до succeeded |
@@ -86,7 +86,9 @@ DiscoveryReport дополняется pending (все ожидающие), defe
 
 Lease продлевается каждые 20 секунд, все записи используют актуальный Claim. После потери владения новые действия прекращаются; известный поздний исход сохраняется без старого checkpoint. Перед claim выполняется recoverInterrupted. Журнал важнее step: valid и известный message ID не отправляются повторно. Started без исхода требует отдельного оператора через storage.resolveUncertain, конвейер сам его не вызывает.
 
-Разбор противоположной стороны переиспользует известный job ID или ждёт fresh при unknown без второго POST. Deadline берётся из createdAt сохранённого допуска; restart его не сбрасывает. Исчезнувший job не означает parsed. После deadline свежий basic даёт `parse-timeout`, платного basic fallback нет. GET network/timeout/upstream/rate-limit откладываются минимум на минуту и учитывают retryAt; bounded retry самого клиента сохраняется. POST автоматически не повторяются.
+После принятого запроса разбора live-конвейер планирует проверку через 120000 мс от первого сохранённого допуска. Если свежий GET всё ещё basic и общий срок ожидания не истёк, отправляется ровно один повторный POST. Если данные уже parsed, задача сразу продолжает подготовку фактов. Наличие replay_url не требуется. До двух минут, в prepare-only, после неизвестного или released исхода повтор не выполняется. Транспортный OpenDotaClient по-прежнему отправляет один POST на вызов requestParse.
+
+Разбор противоположной стороны переиспользует известное задание и общий единственный повтор. Допуск повтора атомарно сохраняет связь с первой попыткой и её createdAt в parse-input; restart, другая сторона и сбой после допуска до ответа не разрешают третий POST. Deadline остаётся привязанным к первой попытке; по умолчанию это 15 минут, повтор его не продлевает. Исчезнувший job не означает parsed. После deadline свежий basic даёт `parse-timeout`, платного basic fallback нет. GET network/timeout/upstream/rate-limit откладываются минимум на минуту и учитывают retryAt; bounded retry самого клиента сохраняется. Неизвестный исход POST требует внимания, однозначный отказ завершает задачу.
 
 ## Анализ и бюджет
 

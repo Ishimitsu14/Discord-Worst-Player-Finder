@@ -291,16 +291,16 @@ export class Storage {
     return !!this.get('SELECT id FROM external_attempts WHERE job_id=? AND unresolved=1 AND released=0 AND id!=? LIMIT 1', jobId, except ?? '');
   }
   private verify<T>(body: () => T): T { try { return body(); } catch { throw new StorageError('integrity-error', 'validate'); } }
-  private available(jobId: string, kind: Receipt['kind']): void {
+  private available(jobId: string, kind: Receipt['kind'], previousParseId?: string): void {
     ensure(!this.get("SELECT id FROM external_attempts WHERE job_id=? AND kind=? AND released=0 AND (state='prepared' OR unresolved=1)", jobId, kind), 'conflict');
-    for (const row of this.all('SELECT id FROM external_attempts WHERE job_id=? AND kind=? AND outcome_ref IS NOT NULL', jobId, kind)) {
+    for (const row of this.all('SELECT id FROM external_attempts WHERE job_id=? AND kind=? AND outcome_ref IS NOT NULL AND id!=?', jobId, kind, previousParseId ?? '')) {
       const outcome = this.receipt(row.id as string).outcome!;
       ensure(!(kind === 'parse' && 'jobId' in outcome || kind === 'publication' && 'messageId' in outcome || kind === 'analysis' && 'status' in outcome && outcome.status === 'valid'), 'conflict');
     }
   }
-  private insertAttempt(job: Job, attemptId: string, kind: Receipt['kind'], inputRef: string, state: Receipt['state']): Receipt {
+  private insertAttempt(job: Job, attemptId: string, kind: Receipt['kind'], inputRef: string, state: Receipt['state'], previousParseId?: string): Receipt {
     ensure(id(attemptId));
-    ensure(!this.get('SELECT id FROM external_attempts WHERE id=?', attemptId), 'attempt-already-started'); this.available(job.id, kind);
+    ensure(!this.get('SELECT id FROM external_attempts WHERE id=?', attemptId), 'attempt-already-started'); this.available(job.id, kind, previousParseId);
     ensure(!this.hasUnresolved(job.id), 'conflict');
     const now = this.now();
     this.write('INSERT INTO external_attempts(id,job_id,kind,state,input_ref,unresolved,released,created_at,updated_at) VALUES(?,?,?,?,?,?,0,?,?)',
@@ -350,9 +350,21 @@ export class Storage {
       });
     });
   }
-  beginParse(claim: Claim, input: { attemptId: string }): Receipt {
-    return this.run('beginParse', () => { keys(input, ['attemptId']); ensure(id(input.attemptId)); return this.tx(() => {
-      const job = this.owned(claim), inputRef = this.put('parse-input', encode({ version: 1, matchId: job.matchId })); return this.insertAttempt(job, input.attemptId, 'parse', inputRef, 'started');
+  beginParse(claim: Claim, input: { attemptId: string; retryOf?: string }): Receipt {
+    return this.run('beginParse', () => { keys(input, ['attemptId'], ['retryOf']); ensure(id(input.attemptId) && (input.retryOf === undefined || id(input.retryOf))); return this.tx(() => {
+      const job = this.owned(claim), value: ParseInput = { version: 1, matchId: job.matchId };
+      if (input.retryOf !== undefined) {
+        const previous = this.receipt(input.retryOf);
+        ensure(previous.kind === 'parse' && this.findJob(previous.jobId).matchId === job.matchId && !(previous.input as ParseInput).retryOf
+          && previous.state === 'finished' && !previous.released && !previous.unresolved && previous.outcome && 'jobId' in previous.outcome
+          && this.now() - previous.createdAt >= 120000, 'conflict');
+        ensure(!this.get(`SELECT a.id FROM external_attempts a JOIN artifacts i ON i.ref=a.input_ref
+          WHERE a.kind='parse' AND json_extract(i.body,'$.retryOf.attemptId')=?`, previous.id), 'conflict');
+        ensure(!this.get(`SELECT a.id FROM external_attempts a JOIN jobs j ON j.id=a.job_id
+          WHERE j.match_id=? AND a.kind='parse' AND a.unresolved=1 AND a.released=0`, job.matchId), 'conflict');
+        value.retryOf = { attemptId: previous.id, createdAt: previous.createdAt };
+      }
+      const inputRef = this.put('parse-input', encode(value)); return this.insertAttempt(job, input.attemptId, 'parse', inputRef, 'started', input.retryOf);
     }); });
   }
   saveParseOutcome(attemptId: string, outcome: ParseOutcome): Receipt {

@@ -47,12 +47,14 @@ Claim действует 60 секунд. Продлевайте его во в�
 | claimNext / renewClaim / checkpoint / defer / finish | владение, контрольная точка и состояние |
 | saveInputs / getJobArtifacts | неизменяемые входные DTO и ссылки |
 | reserveAnalysis / startAnalysis / saveAnalysisOutcome | резерв одного вызова, одноразовый beforeSend, исход |
-| beginParse / saveParseOutcome | одноразовый POST разбора, job ID либо сводка ошибки OpenDota |
+| beginParse / saveParseOutcome | отдельный допуск до каждого POST разбора, необязательный retryOf для единственного повтора, job ID либо сводка ошибки OpenDota |
 | beginPublication / savePublicationOutcome | цель и точная строка сообщения, затем message ID либо not-sent/unknown |
 | recoverInterrupted / resolveUncertain | локальное восстановление и решение с аудитом |
 | getJob / getLatestJob / getLatestResult / listAttempts / getBillingSummary | задачи, принятый результат, журнал и расходы |
 
-Подготовка анализа не разрешает сеть. Новый attemptId передаётся в reserveAnalysis один раз; её id используется для startAnalysis/saveAnalysisOutcome. Для каждого следующего вызова analyzeMatch требуется новый ID. Ошибка допуска означает отсутствие права на POST; тот же допуск повторно не выдаётся. Начала parse/publication тоже одноразовые. Сохранение одинакового исхода повторяемо; противоречивое завершение возвращает conflict. Зафиксированные job ID и message ID запрещают повторную отправку в этой ревизии. После valid требуется новая ревизия для нового анализа.
+Подготовка анализа не разрешает сеть. Новый attemptId передаётся в reserveAnalysis один раз; её id используется для startAnalysis/saveAnalysisOutcome. Для каждого следующего вызова analyzeMatch требуется новый ID. Ошибка допуска означает отсутствие права на POST; тот же допуск повторно не выдаётся. Начала parse/publication тоже одноразовые. Сохранение одинакового исхода повторяемо; противоречивое завершение возвращает conflict. Известный message ID запрещает повтор публикации; после valid требуется новая ревизия для нового анализа.
+
+Для разбора `beginParse(claim, { attemptId, retryOf })` разрешает один повтор не раньше 120000 мс после первой попытки с подтверждённым unreleased job ID. Без retryOf прежний запрет второго допуска после известного job ID сохраняется. Storage сам записывает `parse-input.retryOf={attemptId,createdAt}` из родительской попытки; подмена match ID, повтор потомка и неизвестный исход не допускаются. Проверка отсутствия прежнего повтора и запись started выполняются в одной транзакции, включая другую сторону матча и отдельное SQLite-соединение. Started без исхода расходует этот повтор и восстанавливается как needs-attention. Формат старых входов читается как раньше, схема БД остаётся 3. Проверка свежего basic и общего deadline принадлежит pipeline; отдельный транспортный requestParse не повторяет POST.
 
 Фрагмент обработки; `claim` должен оставаться действующим, продление выполняет вызывающий pipeline:
 
